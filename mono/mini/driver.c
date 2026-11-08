@@ -2902,12 +2902,38 @@ mono_main (int argc, char* argv[])
  	return 0;
 }
 
+/* Applies MONO_ENV_OPTIONS for a host that starts the runtime without a command line. */
+static void
+parse_env_options_for_embedder (void)
+{
+	char *env_options = g_getenv ("MONO_ENV_OPTIONS");
+	if (env_options == NULL)
+		return;
+
+	/* The parser keeps argv [0] as the program name. */
+	char *placeholder [] = { (char *) "mono", NULL };
+	char **argv = placeholder;
+	int argc = 1;
+	char *parse_error = mono_parse_options_from (env_options, &argc, &argv);
+
+	g_free (env_options);
+
+	if (parse_error != NULL) {
+		fprintf (stderr, "%s", parse_error);
+		exit (1);
+	}
+
+	if (argc > 1)
+		mono_jit_parse_options (argc - 1, argv + 1);
+}
+
 /**
  * mono_jit_init:
  */
-MonoDomain * 
+MonoDomain *
 mono_jit_init (const char *file)
 {
+	parse_env_options_for_embedder ();
 	MonoDomain *ret = mini_init (file, NULL);
 	MONO_ENTER_GC_SAFE_UNBALANCED; //once it is not executing any managed code yet, it's safe to run the gc
 	return ret;
@@ -2936,6 +2962,7 @@ mono_jit_init (const char *file)
 MonoDomain * 
 mono_jit_init_version (const char *domain_name, const char *runtime_version)
 {
+	parse_env_options_for_embedder ();
 	MonoDomain *ret = mini_init (domain_name, runtime_version);
 	MONO_ENTER_GC_SAFE_UNBALANCED; //once it is not executing any managed code yet, it's safe to run the gc
 	return ret;
