@@ -329,7 +329,22 @@ mono_error_set_first_argument (MonoError *oerror, const char *first_argument);
 #if !defined(__clang__)
 #include <intrin.h>
 
-// Single instruction inlinable form of GetLastError.
+#if HOST_AMD64
+
+// TEB.LastErrorValue, reached through NtCurrentTeb (gs:[0x30], NT_TIB.Self) rather than as gs:[0x68].
+// 64-bit Wine on macOS points gs at the macOS thread's TSD instead of the TEB and mirrors only a few TEB
+// fields there, Self among them, so gs:[0x68] is an unrelated TSD slot.
+//
+static inline
+volatile DWORD*
+mono_last_error_address (void)
+{
+    return (volatile DWORD*)((BYTE*)NtCurrentTeb () + 0x68);
+}
+
+#endif
+
+// Inlinable form of GetLastError.
 //
 // Naming violation so can search disassembly for GetLastError.
 //
@@ -343,13 +358,13 @@ GetLastError (void)
 #if HOST_X86
     return __readfsdword (0x34);
 #elif HOST_AMD64
-    return __readgsdword (0x68);
+    return *mono_last_error_address ();
 #else
 #error Unreachable, see above.
 #endif
 }
 
-// Single instruction inlinable valid subset of SetLastError.
+// Inlinable valid subset of SetLastError.
 //
 // Naming violation so can search disassembly for SetLastError.
 //
@@ -367,7 +382,7 @@ mono_SetLastError (unsigned long err)
 #if HOST_X86
     __writefsdword (0x34, err);
 #elif HOST_AMD64
-    __writegsdword (0x68, err);
+    *mono_last_error_address () = err;
 #else
 #error Unreachable, see above.
 #endif
