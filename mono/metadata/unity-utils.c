@@ -74,6 +74,11 @@ gboolean mono_unity_is_embedded(void)
 	return gEmbeddingHostName != 0;
 }
 
+gboolean mono_unity_embedding_host_name_is_set (void)
+{
+	return gEmbeddingHostName != NULL && strcmp (gEmbeddingHostName->str, "mono") != 0;
+}
+
 static gboolean socket_security_enabled = FALSE;
 
 gboolean
