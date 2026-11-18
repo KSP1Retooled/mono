@@ -68,13 +68,23 @@ set(_ksp_overrides_pdb "${CMAKE_BINARY_DIR}/mono/mini/mono-overrides.pdb")
 set(_ksp_managed_dir "${CMAKE_BINARY_DIR}/mcs/class/lib/unityjit-${MONO_MANAGED_PLATFORM}")
 set(_ksp_config_subdir "MonoBleedingEdge/etc/mono")
 
-# Mono.Cecil is deliberately absent: mods bind against the game's own copy,
-# which carries no runtime coupling, so shipping ours only adds a version
-# skew.
-set(_ksp_assemblies
-    mscorlib System System.Core System.Xml System.Configuration System.Security
-    Mono.Posix Mono.Security
-    I18N I18N.West I18N.CJK I18N.MidEast I18N.Other I18N.Rare)
+get_property(_ksp_managed_targets GLOBAL PROPERTY MONO_MANAGED_PROFILE_TARGETS_unityjit)
+set(_ksp_copy_managed "")
+foreach(_target IN LISTS _ksp_managed_targets)
+  get_property(_dll GLOBAL PROPERTY MONO_MANAGED_OUTPUT_${_target})
+  if(NOT _dll MATCHES "\\.dll$")
+    continue()
+  endif()
+  file(RELATIVE_PATH _rel "${_ksp_managed_dir}" "${_dll}")
+  cmake_path(GET _rel PARENT_PATH _subdir)
+  cmake_path(REPLACE_EXTENSION _dll LAST_ONLY ".pdb" OUTPUT_VARIABLE _pdb)
+  set(_dest "${_ksp_stage}/${_ksp_managed_subdir}/${_subdir}")
+  string(APPEND _ksp_copy_managed
+    "file(COPY [[${_dll}]] DESTINATION [[${_dest}]])\n"
+    "if(EXISTS [[${_pdb}]])\n  file(COPY [[${_pdb}]] DESTINATION [[${_dest}]])\nendif()\n")
+endforeach()
+set(_ksp_copy_script "${CMAKE_BINARY_DIR}/ksp-copy-managed.cmake")
+file(GENERATE OUTPUT "${_ksp_copy_script}" CONTENT "${_ksp_copy_managed}")
 
 # Written outside the staging directory: the target's own rm -rf clears that
 # on every run, before the build-time copies below put these back.
@@ -168,17 +178,7 @@ endif()
 set(_ksp_config "${CMAKE_BINARY_DIR}/ksp-package-config.xml")
 file(WRITE "${_ksp_config}" "${_ksp_config_base}")
 
-# Without a .pdb beside the assembly, a managed frame in a stack trace has no
-# file or line. Nothing writes a .pdb for an assembly declared NO_DEBUG, so
-# adding one to the list above fails this copy.
-set(_ksp_copy_commands "")
-foreach(_asm IN LISTS _ksp_assemblies)
-  list(APPEND _ksp_copy_commands
-       COMMAND "${CMAKE_COMMAND}" -E copy
-               "${_ksp_managed_dir}/${_asm}.dll" "${_ksp_stage}/${_ksp_managed_subdir}/${_asm}.dll"
-       COMMAND "${CMAKE_COMMAND}" -E copy
-               "${_ksp_managed_dir}/${_asm}.pdb" "${_ksp_stage}/${_ksp_managed_subdir}/${_asm}.pdb")
-endforeach()
+set(_ksp_copy_commands COMMAND "${CMAKE_COMMAND}" -P "${_ksp_copy_script}")
 if(_ksp_native_pal)
   list(APPEND _ksp_copy_commands
        COMMAND "${CMAKE_COMMAND}" -E copy
