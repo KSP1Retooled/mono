@@ -14,16 +14,12 @@ if(NOT MONO_ENABLE_MCS_BUILD OR NOT MONO_ENABLE_LIBRARIES)
   return()
 endif()
 
-if(MONO_UNITY_SGEN_AS_BDWGC AND MONO_ENABLE_SGEN)
-  set(_ksp_runtime_target monobdwgc-2.0)
-elseif(MONO_ENABLE_BOEHM)
-  set(_ksp_runtime_target monoboehm-2.0)
-else()
-  message(WARNING
-    "package-ksp needs MONO_UNITY_SGEN_AS_BDWGC=ON (with MONO_ENABLE_SGEN) or "
-    "MONO_ENABLE_BOEHM=ON; neither is satisfied, so the target is not defined.")
+# Unity 6000.7 dereferences strong v2 handles as Boehm slots in player code.
+if(NOT MONO_ENABLE_BOEHM)
+  message(WARNING "package-ksp requires MONO_ENABLE_BOEHM for the Unity 6000.7 runtime ABI.")
   return()
 endif()
+set(_ksp_runtime_target monoboehm-2.0)
 
 if(MONO_HOST_WINDOWS)
   set(_ksp_platform_tag    "windows")
