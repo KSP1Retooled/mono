@@ -20,6 +20,11 @@ if(_mcs_real_bindir STREQUAL _mcs_real_srcdir)
     "Remove whatever makes it a symlink and reconfigure.")
 endif()
 
+if(MONO_HOST_WINDOWS)
+  list(REMOVE_ITEM MONO_PROFILE_unityjit_MCS_FLAGS -d:DISABLE_COM)
+  list(APPEND MONO_PROFILE_unityjit_MCS_FLAGS -d:UNITY_WIN_PLATFORM)
+endif()
+
 add_subdirectory(build)
 add_subdirectory(class/Accessibility)
 add_subdirectory(class/Commons.Xml.Relaxng)
