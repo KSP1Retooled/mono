@@ -850,16 +850,6 @@ clear_domain_free_los_object_callback (GCObject *obj, size_t size, MonoDomain *d
 }
 
 void
-sgen_finish_concurrent_work (const char *reason, gboolean stw)
-{
-	if (sgen_get_concurrent_collection_in_progress ())
-		sgen_perform_collection (0, GENERATION_OLD, reason, TRUE, stw);
-	SGEN_ASSERT (0, !sgen_get_concurrent_collection_in_progress (), "We just ordered a synchronous collection.  Why are we collecting concurrently?");
-
-	sgen_major_collector.finish_sweeping ();
-}
-
-void
 mono_gc_stop_world ()
 {
 	LOCK_GC;
@@ -2652,6 +2642,12 @@ mono_gc_collect (int generation)
 	MONO_ENTER_GC_UNSAFE;
 	sgen_gc_collect (generation);
 	MONO_EXIT_GC_UNSAFE;
+}
+
+int
+mono_gc_collect_a_little (void)
+{
+	return 0;
 }
 
 void

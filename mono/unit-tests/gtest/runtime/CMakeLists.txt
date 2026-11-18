@@ -75,7 +75,7 @@ mono_add_unit_test(test-mono-runtime RUNTIME SOURCES
   harness.cpp test-mono-callspec.cpp test-mono-string.cpp test-path.cpp
   test-function-pointer.cpp test-detour.cpp test-icall.cpp
   test-unmanaged-callers-only.cpp test-arch-amd64.cpp
-  test-unity-pinned-alloc.cpp test-unity-liveness.cpp
+  test-unity-pinned-alloc.cpp test-unity-liveness.cpp test-unity-gc.cpp
   test-type-init-recursion.cpp test-tier.cpp test-eh-ranges.cpp
   test-etw-profiler.cpp test-il-analyzer.cpp test-windows-unwind-table.cpp
   test-race-entry.cpp)
@@ -94,6 +94,23 @@ mono_unit_test_cases(test-mono-runtime test-unity-liveness "UnityLiveness.*"
                      ENV MONO_UNITY_LIVENESS_THREADS=8)
 mono_unit_test_cases(test-mono-runtime test-unity-liveness-serial "UnityLiveness.*"
                      ENV MONO_UNITY_LIVENESS_THREADS=1)
+mono_unit_test_cases(test-mono-runtime test-unity-gc@sgen "UnityGC.*"
+                     ENV MONO_GC_PARAMS=nursery-size=1m,major=marksweep-conc)
+mono_unit_test_cases(test-mono-runtime test-unity-gc-llvm@sgen "UnityGC.Modes"
+                     ENV MONO_GC_PARAMS=nursery-size=1m,major=marksweep-conc
+                         MONO_ENV_OPTIONS=--llvm-opt=-mono-tier0-filter=0)
+if(MONO_ENABLE_BOEHM)
+  mono_gtest_binary(test-unity-gc-boehm
+    SOURCES harness.cpp test-unity-gc.cpp test-unity-liveness.cpp
+    LIBRARIES monoboehm-static
+    INCLUDES "${CMAKE_SOURCE_DIR}/mono"
+    DEFINITIONS MONO_UNIT_TESTS_ASSEMBLIES="${MONO_MCS_LIBDIR}/${MONO_DEFAULT_PROFILE}")
+  mono_unit_test_cases(test-unity-gc-boehm test-unity-gc@boehm "UnityGC.*")
+  mono_unit_test_cases(test-unity-gc-boehm test-unity-liveness@boehm "UnityLiveness.*"
+                       ENV MONO_UNITY_LIVENESS_THREADS=8)
+  mono_unit_test_cases(test-unity-gc-boehm test-unity-liveness-serial@boehm "UnityLiveness.*"
+                       ENV MONO_UNITY_LIVENESS_THREADS=1)
+endif()
 mono_unit_test_cases(test-mono-runtime test-type-init-recursion
                      "TypeInitRecursion.*")
 mono_unit_test_cases(test-mono-runtime test-tier          "MethodTier.*")
@@ -164,6 +181,7 @@ if(MONO_ENABLE_MCS_BUILD)
   _mono_test_assembly(remset-missing.exe "${CMAKE_CURRENT_SOURCE_DIR}/remset-missing.cs")
   _mono_test_assembly(unity-pinned-alloc.exe "${CMAKE_CURRENT_SOURCE_DIR}/unity-pinned-alloc.cs")
   _mono_test_assembly(unity-liveness.exe "${CMAKE_CURRENT_SOURCE_DIR}/unity-liveness.cs")
+  _mono_test_assembly(unity-gc.exe "${CMAKE_CURRENT_SOURCE_DIR}/unity-gc.cs")
   _mono_test_assembly(type-init-recursion.exe
                       "${CMAKE_CURRENT_SOURCE_DIR}/type-init-recursion.cs")
   _mono_test_assembly(tier.exe "${CMAKE_CURRENT_SOURCE_DIR}/tier.cs")
@@ -182,6 +200,7 @@ if(MONO_ENABLE_MCS_BUILD)
     "${CMAKE_CURRENT_BINARY_DIR}/remset-missing.exe"
     "${CMAKE_CURRENT_BINARY_DIR}/unity-pinned-alloc.exe"
     "${CMAKE_CURRENT_BINARY_DIR}/unity-liveness.exe"
+    "${CMAKE_CURRENT_BINARY_DIR}/unity-gc.exe"
     "${CMAKE_CURRENT_BINARY_DIR}/type-init-recursion.exe"
     "${CMAKE_CURRENT_BINARY_DIR}/tier.exe"
     "${CMAKE_CURRENT_BINARY_DIR}/eh-ranges.exe"

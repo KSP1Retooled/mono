@@ -38,6 +38,7 @@
 #include <mono/metadata/gc-internals.h>
 #if HAVE_SGEN_GC
 #include <mono/sgen/sgen-gc.h>
+#include <mono/utils/mono-threads-coop.h>
 #endif
 
 #include <glib.h>
@@ -984,6 +985,12 @@ MONO_API void mono_unity_gc_set_mode(MonoGCMode mode)
 			GC_set_disable_automatic_collection(TRUE);
 			break;
 	}
+#elif HAVE_SGEN_GC
+	if (mode == MONO_GC_MODE_ENABLED || mode == MONO_GC_MODE_DISABLED || mode == MONO_GC_MODE_MANUAL) {
+		MONO_ENTER_GC_UNSAFE;
+		sgen_gc_set_mode (mode == MONO_GC_MODE_DISABLED, mode == MONO_GC_MODE_MANUAL);
+		MONO_EXIT_GC_UNSAFE;
+	}
 #else
 	g_assert_not_reached();
 #endif
@@ -994,16 +1001,10 @@ MONO_API void mono_unity_gc_enable()
 {
 #if HAVE_BOEHM_GC
 	GC_enable();
-#else
-	g_assert_not_reached ();
-#endif
-}
-
-MONO_API gboolean
-mono_unity_gc_is_heap_ptr(const void* ptr)
-{
-#if HAVE_BOEHM_GC
-	return GC_is_heap_ptr(ptr);
+#elif HAVE_SGEN_GC
+	MONO_ENTER_GC_UNSAFE;
+	sgen_gc_enable ();
+	MONO_EXIT_GC_UNSAFE;
 #else
 	g_assert_not_reached();
 #endif
@@ -1014,6 +1015,10 @@ MONO_API void mono_unity_gc_disable()
 {
 #if HAVE_BOEHM_GC
 	GC_disable();
+#elif HAVE_SGEN_GC
+	MONO_ENTER_GC_UNSAFE;
+	sgen_gc_disable ();
+	MONO_EXIT_GC_UNSAFE;
 #else
 	g_assert_not_reached ();
 #endif
@@ -1024,6 +1029,8 @@ MONO_API int mono_unity_gc_is_disabled()
 {
 #if HAVE_BOEHM_GC
 	return GC_is_disabled ();
+#elif HAVE_SGEN_GC
+	return sgen_gc_is_disabled ();
 #else
 	g_assert_not_reached ();
 	return 0;
@@ -1979,7 +1986,65 @@ static void handle_gc_heap_chunk(void* userData, gpointer chunk_start, gpointer 
 	chunk.size = (uint8_t *)chunk_end - (uint8_t *)chunk_start;
 	ctx->callback(&chunk, ctx->user_data);
 }
+#elif HAVE_SGEN_GC
+static void
+report_sgen_heap_chunk (gpointer start, size_t size, gpointer user_data)
+{
+	execution_ctx *ctx = (execution_ctx *)user_data;
+	mono_heap_chunk chunk = { start, size };
+	ctx->callback (&chunk, ctx->user_data);
+}
+
+static void
+report_sgen_los_chunk (GCObject *obj, size_t size, gpointer user_data)
+{
+	report_sgen_heap_chunk (obj, size, user_data);
+}
+
+static void
+sgen_heap_foreach (GFunc callback, gpointer user_data)
+{
+	execution_ctx ctx = { callback, user_data };
+	report_sgen_heap_chunk (sgen_get_nursery_start (), sgen_nursery_size, &ctx);
+	sgen_major_collector.iterate_heap_ranges (report_sgen_heap_chunk, &ctx);
+	sgen_los_iterate_objects (report_sgen_los_chunk, &ctx);
+}
+
+typedef struct {
+	mword address;
+	gboolean found;
+} HeapPointerSearch;
+
+static void
+find_sgen_heap_ptr (gpointer data, gpointer user_data)
+{
+	mono_heap_chunk *chunk = (mono_heap_chunk *)data;
+	HeapPointerSearch *search = (HeapPointerSearch *)user_data;
+	if (search->address - (mword)chunk->start < chunk->size)
+		search->found = TRUE;
+}
 #endif
+
+MONO_API gboolean
+mono_unity_gc_is_heap_ptr (const void *ptr)
+{
+#if HAVE_BOEHM_GC
+	return GC_is_heap_ptr (ptr);
+#elif HAVE_SGEN_GC
+	HeapPointerSearch search = { (mword)ptr, FALSE };
+	MONO_ENTER_GC_UNSAFE;
+	sgen_gc_lock ();
+	sgen_major_collector.finish_sweeping ();
+	sgen_heap_foreach (find_sgen_heap_ptr, &search);
+	sgen_gc_unlock ();
+	MONO_EXIT_GC_UNSAFE;
+	return search.found;
+#else
+	g_assert_not_reached ();
+	return FALSE;
+#endif
+}
+
 MONO_API void
 mono_unity_gc_heap_foreach(GFunc callback, gpointer user_data)
 {
@@ -1988,6 +2053,9 @@ mono_unity_gc_heap_foreach(GFunc callback, gpointer user_data)
 	ctx.callback = callback;
 	ctx.user_data = user_data;
 	GC_foreach_heap_section(&ctx, handle_gc_heap_chunk);
+#elif HAVE_SGEN_GC
+	g_assert (sgen_is_world_stopped ());
+	sgen_heap_foreach (callback, user_data);
 #else
 	g_assert_not_reached();
 #endif
@@ -2011,6 +2079,9 @@ mono_unity_gc_handles_foreach_get_target(GFunc callback, gpointer user_data)
 	ctx.callback = callback;
 	ctx.user_data = user_data;
 	mono_gc_strong_handle_foreach(handle_gc_handle, &ctx);
+#elif HAVE_SGEN_GC
+	g_assert (sgen_is_world_stopped ());
+	sgen_gchandle_foreach_strong_target (callback, user_data);
 #else
 	g_assert_not_reached();
 #endif

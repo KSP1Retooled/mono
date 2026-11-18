@@ -573,6 +573,8 @@ MonoCoopMutex sgen_gc_mutex;
 #define SCAN_START_SIZE	SGEN_SCAN_START_SIZE
 
 size_t sgen_degraded_mode = 0;
+static gint32 gc_disable_count;
+static gboolean gc_manual;
 
 static mword bytes_pinned_from_failed_allocation = 0;
 
@@ -2759,6 +2761,9 @@ sgen_ensure_free_space (size_t size, int generation)
 	const char *reason = NULL;
 	gboolean forced = FALSE;
 
+	if (!sgen_gc_automatic_collection_enabled ())
+		return;
+
 	if (generation == GENERATION_OLD) {
 		if (sgen_need_major_collection (size, &forced)) {
 			reason = "LOS overflow";
@@ -2788,7 +2793,7 @@ sgen_ensure_free_space (size_t size, int generation)
 
 	if (generation_to_collect == -1)
 		return;
-	sgen_perform_collection (size, generation_to_collect, reason, forced, TRUE);
+	sgen_perform_automatic_collection (size, generation_to_collect, reason, forced);
 }
 
 /*
@@ -2900,8 +2905,8 @@ gc_pump_callback (void)
 extern gboolean mono_wasm_enable_gc;
 #endif
 
-void
-sgen_perform_collection (size_t requested_size, int generation_to_collect, const char *reason, gboolean forced_serial, gboolean stw)
+static void
+perform_collection (size_t requested_size, int generation_to_collect, const char *reason, gboolean forced_serial, gboolean stw)
 {
 #ifdef HOST_WASM
 	if (!mono_wasm_enable_gc) {
@@ -2923,6 +2928,70 @@ sgen_perform_collection (size_t requested_size, int generation_to_collect, const
 #endif
 
 	sgen_perform_collection_inner (requested_size, generation_to_collect, reason, forced_serial, stw);
+}
+
+gboolean
+sgen_gc_is_disabled (void)
+{
+	return mono_atomic_load_i32 (&gc_disable_count) != 0;
+}
+
+gboolean
+sgen_gc_automatic_collection_enabled (void)
+{
+	return !gc_manual && !sgen_gc_is_disabled ();
+}
+
+void
+sgen_perform_automatic_collection (size_t requested_size, int generation_to_collect, const char *reason, gboolean forced_serial)
+{
+	if (sgen_gc_automatic_collection_enabled ())
+		perform_collection (requested_size, generation_to_collect, reason, forced_serial, TRUE);
+}
+
+void
+sgen_finish_concurrent_work (const char *reason, gboolean stw)
+{
+	if (sgen_concurrent_collection_in_progress)
+		perform_collection (0, GENERATION_OLD, reason, TRUE, stw);
+	SGEN_ASSERT (0, !sgen_concurrent_collection_in_progress, "We just ordered a synchronous collection.  Why are we collecting concurrently?");
+	sgen_major_collector.finish_sweeping ();
+}
+
+static void
+set_gc_mode (gint32 disable_count, gboolean manual)
+{
+	if (sgen_gc_automatic_collection_enabled () && (disable_count || manual))
+		sgen_finish_concurrent_work ("Unity GC mode change", TRUE);
+	gc_manual = manual;
+	mono_atomic_store_i32 (&gc_disable_count, disable_count);
+}
+
+void
+sgen_gc_set_mode (gboolean disabled, gboolean manual)
+{
+	LOCK_GC;
+	if (disabled)
+		set_gc_mode (MAX (gc_disable_count, 1), gc_manual);
+	else
+		set_gc_mode (MAX (gc_disable_count - 1, 0), manual);
+	UNLOCK_GC;
+}
+
+void
+sgen_gc_disable (void)
+{
+	LOCK_GC;
+	set_gc_mode (gc_disable_count + 1, gc_manual);
+	UNLOCK_GC;
+}
+
+void
+sgen_gc_enable (void)
+{
+	LOCK_GC;
+	set_gc_mode (MAX (gc_disable_count - 1, 0), gc_manual);
+	UNLOCK_GC;
 }
 /*
  * ######################################################################
@@ -3383,12 +3452,13 @@ sgen_gc_collect (int generation)
 	gboolean forced;
 
 	LOCK_GC;
-	if (generation > 1)
-		generation = 1;
-	sgen_perform_collection (0, generation, "user request", TRUE, TRUE);
-	/* Make sure we don't exceed heap size allowance by promoting */
-	if (generation == GENERATION_NURSERY && sgen_need_major_collection (0, &forced))
-		sgen_perform_collection (0, GENERATION_OLD, "Minor allowance", forced, TRUE);
+	if (!sgen_gc_is_disabled ()) {
+		generation = MIN (generation, GENERATION_OLD);
+		perform_collection (0, generation, "user request", TRUE, TRUE);
+		/* Make sure we don't exceed heap size allowance by promoting */
+		if (generation == GENERATION_NURSERY && sgen_gc_automatic_collection_enabled () && sgen_need_major_collection (0, &forced))
+			sgen_perform_automatic_collection (0, GENERATION_OLD, "Minor allowance", forced);
+	}
 	UNLOCK_GC;
 }
 

@@ -825,7 +825,7 @@ major_alloc_small_pinned_obj (GCVTable vtable, size_t size, gboolean has_referen
 	  *as pinned alloc is requested by the runtime.
 	  */
 	 if (!res) {
-		sgen_perform_collection (0, GENERATION_OLD, "pinned alloc failure", TRUE, TRUE);
+		sgen_perform_automatic_collection (0, GENERATION_OLD, "pinned alloc failure", TRUE);
 		res = alloc_obj (vtable, size, TRUE, has_references);
 	 }
 	 return (GCObject *)res;
@@ -2529,6 +2529,16 @@ get_block_range_for_job (int job_index, int job_split_count, int block_count, in
 		*end = block_count * (job_index + 1);
 }
 
+static void
+major_iterate_heap_ranges (SgenHeapRangeCallback callback, gpointer user_data)
+{
+	MSBlockInfo *block;
+
+	FOREACH_BLOCK_NO_LOCK (block) {
+		callback (MS_BLOCK_FOR_BLOCK_INFO (block), ms_block_size, user_data);
+	} END_FOREACH_BLOCK_NO_LOCK;
+}
+
 /*
  * This callback is used to clear cards, move cards to the shadow table and do counting.
  */
@@ -3008,6 +3018,7 @@ sgen_marksweep_init_internal (SgenMajorCollector *collector, gboolean is_concurr
 	collector->scan_card_table = major_scan_card_table;
 	collector->iterate_live_block_ranges = major_iterate_live_block_ranges;
 	collector->iterate_block_ranges = major_iterate_block_ranges;
+	collector->iterate_heap_ranges = major_iterate_heap_ranges;
 	collector->iterate_block_ranges_in_parallel = major_iterate_block_ranges_in_parallel;
 #ifndef DISABLE_SGEN_MAJOR_MARKSWEEP_CONC
 	if (is_concurrent) {

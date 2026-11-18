@@ -421,6 +421,7 @@ void sgen_deregister_root (char* addr)
 
 typedef void (*IterateObjectCallbackFunc) (GCObject*, size_t, void*);
 typedef gboolean (*IterateObjectResultCallbackFunc) (GCObject*, size_t, void*);
+typedef void (*SgenHeapRangeCallback) (gpointer start, size_t size, gpointer user_data);
 
 void sgen_scan_area_with_callback (char *start, char *end, IterateObjectCallbackFunc callback, void *data, gboolean allow_flags, gboolean fail_on_canaries);
 
@@ -706,6 +707,7 @@ struct _SgenMajorCollector {
 	 * debugging.  Can assume the world is stopped.
 	 */
 	void (*iterate_objects) (IterateObjectsFlags flags, IterateObjectCallbackFunc callback, void *data);
+	void (*iterate_heap_ranges) (SgenHeapRangeCallback callback, gpointer user_data);
 
 	void (*free_non_pinned_object) (GCObject *obj, size_t size);
 	void (*pin_objects) (SgenGrayQueue *queue);
@@ -933,8 +935,13 @@ void sgen_ensure_free_space (size_t size, int generation)
 	MONO_PERMIT (need (sgen_gc_locked, sgen_stop_world));
 void sgen_gc_collect (int generation)
 	MONO_PERMIT (need (sgen_lock_gc, sgen_stop_world));
-void sgen_perform_collection (size_t requested_size, int generation_to_collect, const char *reason, gboolean wait_to_finish, gboolean stw)
+void sgen_perform_automatic_collection (size_t requested_size, int generation_to_collect, const char *reason, gboolean forced_serial)
 	MONO_PERMIT (need (sgen_gc_locked, sgen_stop_world));
+gboolean sgen_gc_automatic_collection_enabled (void);
+void sgen_gc_set_mode (gboolean disabled, gboolean manual);
+void sgen_gc_disable (void);
+void sgen_gc_enable (void);
+gboolean sgen_gc_is_disabled (void);
 
 int sgen_gc_collection_count (int generation);
 /* FIXME: what exactly does this return? */
@@ -1090,6 +1097,7 @@ guint32 sgen_gchandle_new (GCObject *obj, gboolean pinned);
 guint32 sgen_gchandle_new_weakref (GCObject *obj, gboolean track_resurrection);
 void sgen_gchandle_iterate (GCHandleType handle_type, int max_generation, SgenGCHandleIterateCallback callback, gpointer user)
 	MONO_PERMIT (need (sgen_world_stopped));
+void sgen_gchandle_foreach_strong_target (GFunc callback, gpointer user_data);
 void sgen_gchandle_set_target (guint32 gchandle, GCObject *obj);
 void sgen_mark_normal_gc_handles (void *addr, SgenUserMarkFunc mark_func, void *gc_data)
 	MONO_PERMIT (need (sgen_world_stopped));
