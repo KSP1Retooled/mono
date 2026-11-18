@@ -2389,20 +2389,20 @@ guint8*
 mono_amd64_emit_tls_get (guint8* code, int dreg, int tls_offset)
 {
 #ifdef TARGET_WIN32
-	if (tls_offset < 64) {
-		x86_prefix (code, X86_GS_PREFIX);
-		amd64_mov_reg_mem (code, dreg, (tls_offset * 8) + 0x1480, 8);
+	/* macOS Wine mirrors NT_TIB.Self in GS. The dynamic TLS slots live in the TEB. */
+	x86_prefix (code, X86_GS_PREFIX);
+	amd64_mov_reg_mem (code, dreg, offsetof (NT_TIB, Self), 8);
+	if (tls_offset < TLS_MINIMUM_AVAILABLE) {
+		amd64_mov_reg_membase (code, dreg, dreg, offsetof (TEB, TlsSlots) + tls_offset * 8, 8);
 	} else {
 		guint8 *buf [16];
 
 		g_assert (tls_offset < 0x440);
-		/* Load TEB->TlsExpansionSlots */
-		x86_prefix (code, X86_GS_PREFIX);
-		amd64_mov_reg_mem (code, dreg, 0x1780, 8);
+		amd64_mov_reg_membase (code, dreg, dreg, offsetof (TEB, TlsExpansionSlots), 8);
 		amd64_test_reg_reg (code, dreg, dreg);
 		buf [0] = code;
 		amd64_branch (code, X86_CC_EQ, code, TRUE);
-		amd64_mov_reg_membase (code, dreg, dreg, (tls_offset * 8) - 0x200, 8);
+		amd64_mov_reg_membase (code, dreg, dreg, (tls_offset - TLS_MINIMUM_AVAILABLE) * 8, 8);
 		amd64_patch (buf [0], code);
 	}
 #elif defined(TARGET_MACH)
