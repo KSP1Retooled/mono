@@ -5,6 +5,7 @@
 
 set(_corefx      "${CMAKE_SOURCE_DIR}/external/corefx/src/Native")
 set(_corefx_fix  "${CMAKE_SOURCE_DIR}/external/corefx-bugfix/src/Native")
+include(MonoBrotli)
 
 if(NOT EXISTS "${_corefx}/Unix/System.Native/pal_errno.c")
   message(FATAL_ERROR
@@ -27,36 +28,7 @@ set(_native_sources
   # corefx-bugfix is a writable overlay on the read-only corefx submodule:
   # files that needed patching are copied into it and take precedence.
   "${_corefx_fix}/Unix/System.Native/pal_io.c"
-  # brotli, for System.IO.Compression.Brotli
-  "${_corefx_fix}/AnyOS/brotli/enc/backward_references.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/backward_references_hq.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/bit_cost.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/block_splitter.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/brotli_bit_stream.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/cluster.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/command.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/compress_fragment.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/compress_fragment_two_pass.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/dictionary_hash.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/encode.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/encoder_dict.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/entropy_encode.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/fast_log.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/histogram.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/literal_cost.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/memory.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/metablock.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/static_dict.c"
-  "${_corefx_fix}/AnyOS/brotli/enc/utf8_util.c"
-  "${_corefx_fix}/AnyOS/brotli/dec/bit_reader.c"
-  "${_corefx_fix}/AnyOS/brotli/dec/decode.c"
-  "${_corefx_fix}/AnyOS/brotli/dec/huffman.c"
-  "${_corefx_fix}/AnyOS/brotli/dec/state.c"
-  "${_corefx_fix}/AnyOS/brotli/common/constants.c"
-  "${_corefx_fix}/AnyOS/brotli/common/context.c"
-  "${_corefx_fix}/AnyOS/brotli/common/dictionary.c"
-  "${_corefx_fix}/AnyOS/brotli/common/platform.c"
-  "${_corefx_fix}/AnyOS/brotli/common/transform.c")
+  ${MONO_BROTLI_SOURCES})
 
 # mono_native_get_platform_type () reports which build this is.  The managed
 # tests use it to confirm the right library got loaded.
@@ -74,7 +46,7 @@ target_include_directories(mono-native PRIVATE
   "${_corefx_fix}/Unix/Common"
   "${_corefx}/Unix/Common"
   "${_corefx}/Unix/System.Native"
-  "${_corefx_fix}/AnyOS/brotli/include")
+  "${MONO_BROTLI_DIR}/include")
 
 target_link_libraries(mono-native PRIVATE
   mono::common mono::warnings mono::hidden mono::eglib_headers)

@@ -142,6 +142,26 @@ if(MONO_ENABLE_LLVM)
   list(APPEND _mini_extra mono-llvm)
 endif()
 
+if(MONO_HOST_WINDOWS)
+  include(MonoBrotli)
+  mono_add_object_library(mono-brotli
+    SOURCES ${MONO_BROTLI_SOURCES}
+    INCLUDES "${MONO_BROTLI_DIR}/include"
+    DEFINITIONS
+      BROTLI_SHARED_COMPILATION BROTLICOMMON_SHARED_COMPILATION
+      BROTLIDEC_SHARED_COMPILATION BROTLIENC_SHARED_COMPILATION
+      BROTLI_BUILD_NO_RBIT "DLLEXPORT=__declspec(dllexport)")
+  # The Unix PAL uses MonoBrotli names. Windows managed imports use Brotli names.
+  foreach(_entry IN ITEMS
+      BrotliDecoderCreateInstance BrotliDecoderDecompress BrotliDecoderDecompressStream
+      BrotliDecoderDestroyInstance BrotliDecoderIsFinished
+      BrotliEncoderCompress BrotliEncoderCompressStream BrotliEncoderCreateInstance
+      BrotliEncoderDestroyInstance BrotliEncoderHasMoreOutput BrotliEncoderSetParameter)
+    target_compile_definitions(mono-brotli PRIVATE "Mono${_entry}=${_entry}")
+  endforeach()
+  list(APPEND _mini_extra mono-brotli)
+endif()
+
 # Object libraries do not travel through an intermediate link, so each final
 # target names the whole set.
 set(MONO_SGEN_OBJECTS
