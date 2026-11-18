@@ -1606,21 +1606,6 @@ mono_custom_attrs_construct (MonoCustomAttrInfo *cinfo)
 	HANDLE_FUNCTION_RETURN_OBJ (result);
 }
 
-/**
- * mono_custom_attrs_construct_by_type:
- *
- * Construct an array of custom attribute objects from \p cinfo, filtered to
- * instances of \p attr_klass if it is non-NULL. Returns NULL on error, with
- * \p error set.
- */
-MonoArray*
-mono_custom_attrs_construct_by_type (MonoCustomAttrInfo *cinfo, MonoClass *attr_klass, MonoError *error)
-{
-	HANDLE_FUNCTION_ENTER ();
-	MonoArrayHandle result = mono_custom_attrs_construct_by_type_handle (cinfo, attr_klass, error);
-	HANDLE_FUNCTION_RETURN_OBJ (result);
-}
-
 static MonoArrayHandle
 mono_custom_attrs_data_construct (MonoCustomAttrInfo *cinfo, MonoError *error)
 {
