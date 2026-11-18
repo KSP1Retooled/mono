@@ -909,7 +909,7 @@ ReferenceSources/Type.cs
 ../../../external/corefx/src/Common/src/CoreLib/System/AsyncCallback.cs
 ../referencesource/mscorlib/system/attribute.cs
 ../../../external/corefx/src/Common/src/CoreLib/System/AttributeTargets.cs
-../referencesource/mscorlib/system/attributeusageattribute.cs
+../../../external/corefx/src/Common/src/CoreLib/System/AttributeUsageAttribute.cs
 ../../../external/corefx/src/Common/src/CoreLib/System/BadImageFormatException.cs
 ../../../external/corefx/src/Common/src/CoreLib/System/BitConverter.cs
 ../../../external/corefx/src/Common/src/CoreLib/System/Boolean.cs
@@ -1742,8 +1742,8 @@ System.Runtime.Intrinsics/X86/Popcnt.cs
 ../../../external/corefx/src/Common/src/CoreLib/System/SpanHelpers*.cs
 ../../../external/corefx-bugfix/src/Common/src/CoreLib/System/String.cs
 ../../../external/corefx-bugfix/src/Common/src/CoreLib/System/String.Comparison.cs
-../../../external/corefx-bugfix/src/Common/src/CoreLib/System/String.Manipulation.cs
-../../../external/corefx-bugfix/src/Common/src/CoreLib/System/String.Searching.cs
+../../../external/corefx/src/Common/src/CoreLib/System/String.Manipulation.cs
+../../../external/corefx/src/Common/src/CoreLib/System/String.Searching.cs
 ../../../external/corefx/src/Common/src/CoreLib/System/StringSplitOptions.cs
 ../../../external/corefx/src/Common/src/CoreLib/System/Tuple.cs
 ../../../external/corefx/src/Common/src/CoreLib/System/TupleExtensions.cs

@@ -1,6 +1,6 @@
 mono_declare_managed(
   NAME       Mono.Cecil.dll
-  PROFILES   net_4_x unityjit
+  PROFILES   net_4_x
   SUBDIR     legacy
   SNK        ../../mono.snk
   PACKAGE    none

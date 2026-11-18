@@ -20,6 +20,14 @@ if(_mcs_real_bindir STREQUAL _mcs_real_srcdir)
     "Remove whatever makes it a symlink and reconfigure.")
 endif()
 
+if(MONO_HOST_WINDOWS)
+  list(REMOVE_ITEM MONO_PROFILE_unityjit_MCS_FLAGS -d:DISABLE_COM)
+  list(APPEND MONO_PROFILE_unityjit_MCS_FLAGS -d:UNITY_WIN_PLATFORM)
+  mono_profile_dir(_unity_player unityjit)
+  set(MONO_PROFILE_unityjit_DIRECTORY "unstubbed/${MONO_PROFILE_unityjit_DIRECTORY}")
+  add_subdirectory(tools/profile-stubber)
+endif()
+
 add_subdirectory(build)
 add_subdirectory(class/Accessibility)
 add_subdirectory(class/Commons.Xml.Relaxng)
@@ -379,6 +387,9 @@ add_subdirectory(tools/wsdl)
 add_subdirectory(tools/xbuild)
 
 mono_managed_materialize()
+if(MONO_HOST_WINDOWS)
+  include(tools/profile-stubber/publish.cmake)
+endif()
 
 # `mcs` keeps its old meaning: build everything the enabled profiles produce.
 add_custom_target(mcs ALL)
