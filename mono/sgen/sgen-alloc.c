@@ -86,10 +86,10 @@ alloc_degraded (GCVTable vtable, size_t size, gboolean for_mature)
 		sgen_client_degraded_allocation ();
 		SGEN_ATOMIC_ADD_P (sgen_degraded_mode, size);
 		sgen_ensure_free_space (size, GENERATION_OLD);
-	} else {
+	} else if (sgen_gc_automatic_collection_enabled ()) {
 		gboolean forced;
 		if (sgen_need_major_collection (size, &forced))
-			sgen_perform_collection (size, GENERATION_OLD, "mature allocation failure", !for_mature || forced, TRUE);
+			sgen_perform_automatic_collection (size, GENERATION_OLD, "mature allocation failure", forced);
 	}
 
 
@@ -156,8 +156,8 @@ sgen_alloc_obj_nolock (GCVTable vtable, size_t size)
 		int current_alloc = mono_atomic_inc_i32 (&alloc_count);
 
 		if (sgen_collect_before_allocs) {
-			if (((current_alloc % sgen_collect_before_allocs) == 0) && sgen_nursery_section) {
-				sgen_perform_collection (0, GENERATION_NURSERY, "collect-before-alloc-triggered", TRUE, TRUE);
+			if (((current_alloc % sgen_collect_before_allocs) == 0) && sgen_nursery_section && sgen_gc_automatic_collection_enabled ()) {
+				sgen_perform_automatic_collection (0, GENERATION_NURSERY, "collect-before-alloc-triggered", TRUE);
 				if (!sgen_degraded_mode && sgen_can_alloc_size (size) && real_size <= SGEN_MAX_SMALL_OBJ_SIZE) {
 					// FIXME:
 					g_assert_not_reached ();
@@ -185,6 +185,8 @@ sgen_alloc_obj_nolock (GCVTable vtable, size_t size)
 		if (p) {
 			increment_thread_allocation_counter (size);
 		}
+	} else if (!sgen_gc_automatic_collection_enabled ()) {
+		return alloc_degraded (vtable, size, TRUE);
 	} else {
 		/* tlab_next and tlab_temp_end are TLS vars so accessing them might be expensive */
 
@@ -435,7 +437,7 @@ per_allocation_action (void)
 	if (sgen_collect_before_allocs) {
 		if (((current_alloc % sgen_collect_before_allocs) == 0) && sgen_nursery_section) {
 			LOCK_GC;
-			sgen_perform_collection (0, GENERATION_NURSERY, "collect-before-alloc-triggered", TRUE, TRUE);
+			sgen_perform_automatic_collection (0, GENERATION_NURSERY, "collect-before-alloc-triggered", TRUE);
 			UNLOCK_GC;
 		}
 	}

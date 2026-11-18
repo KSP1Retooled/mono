@@ -120,6 +120,10 @@ mono_llvm_load_error_exception (MonoErrorBoxed *failure)
 /* Defined beside the code that emits the call to it. */
 void mono_llvm_seq_point_nop (void);
 
+#ifdef HOST_WIN32
+void __chkstk (void);
+#endif
+
 } // extern "C"
 
 namespace mono {
@@ -136,6 +140,9 @@ void
 get_runtime_builtins (std::vector<MonoBuiltin> &builtins)
 {
 	std::initializer_list<MonoBuiltin> array = {
+#ifdef HOST_WIN32
+		{"__chkstk", (void *) &__chkstk},
+#endif
 		{"mono_domain_get", (void *) &mono_domain_get},
 		{"mono_llvm_jit_tier2_promote", (void *) &mono_llvm_jit_tier2_promote},
 		{"mono_llvm_jit_record_receiver", (void *) &mono_llvm_jit_record_receiver},

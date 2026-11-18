@@ -275,6 +275,28 @@ sgen_gchandle_iterate (GCHandleType handle_type, int max_generation, SgenGCHandl
 	} SGEN_ARRAY_LIST_END_FOREACH_SLOT;
 }
 
+typedef struct {
+	GFunc callback;
+	gpointer user_data;
+} StrongTargetVisitor;
+
+static gpointer
+visit_strong_target (gpointer hidden, GCHandleType handle_type, int max_generation, gpointer user_data)
+{
+	StrongTargetVisitor *visitor = (StrongTargetVisitor *)user_data;
+	if (MONO_GC_HANDLE_IS_OBJECT_POINTER (hidden))
+		visitor->callback (MONO_GC_REVEAL_POINTER (hidden, FALSE), visitor->user_data);
+	return hidden;
+}
+
+void
+sgen_gchandle_foreach_strong_target (GFunc callback, gpointer user_data)
+{
+	StrongTargetVisitor visitor = { callback, user_data };
+	sgen_gchandle_iterate (HANDLE_NORMAL, GENERATION_OLD, visit_strong_target, &visitor);
+	sgen_gchandle_iterate (HANDLE_PINNED, GENERATION_OLD, visit_strong_target, &visitor);
+}
+
 guint32
 sgen_gchandle_new (GCObject *obj, gboolean pinned)
 {

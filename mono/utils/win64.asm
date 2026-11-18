@@ -10,6 +10,43 @@ endif
 
 ifdef RAX
 
+; The MSVC probe reads gs:[10h] directly. macOS Wine exposes Self at gs:[30h].
+PUBLIC _alloca_probe, _alloca_probe2, __chkstk2
+__chkstk PROC PUBLIC FRAME
+_alloca_probe LABEL NEAR
+_alloca_probe2 LABEL NEAR
+__chkstk2 LABEL NEAR
+	sub rsp, 16
+	.allocstack 16
+	.endprolog
+	mov [rsp], r10
+	mov [rsp + 8], r11
+
+	lea r10, [rsp + 24]
+	sub r10, rax
+	jae probe_target
+	xor r10d, r10d
+
+probe_target:
+	mov r11, gs:[30h]
+	mov r11, [r11 + 10h]
+	cmp r10, r11
+	jae probe_done
+	and r10, -4096
+
+probe_page:
+	sub r11, 4096
+	test byte ptr [r11], 0
+	cmp r11, r10
+	ja probe_page
+
+probe_done:
+	mov r11, [rsp + 8]
+	mov r10, [rsp]
+	add rsp, 16
+	ret
+__chkstk ENDP
+
 PUBLIC mono_context_get_current
 
 mono_context_get_current PROC

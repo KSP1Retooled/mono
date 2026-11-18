@@ -14,15 +14,14 @@ if(NOT MONO_ENABLE_MCS_BUILD OR NOT MONO_ENABLE_LIBRARIES)
   return()
 endif()
 
-if(MONO_UNITY_SGEN_AS_BDWGC AND MONO_ENABLE_SGEN)
-  set(_ksp_runtime_target monobdwgc-2.0)
-elseif(MONO_ENABLE_BOEHM)
-  set(_ksp_runtime_target monoboehm-2.0)
-else()
-  message(WARNING
-    "package-ksp needs MONO_UNITY_SGEN_AS_BDWGC=ON (with MONO_ENABLE_SGEN) or "
-    "MONO_ENABLE_BOEHM=ON; neither is satisfied, so the target is not defined.")
+if(NOT MONO_ENABLE_SGEN)
+  message(WARNING "package-ksp requires MONO_ENABLE_SGEN.")
   return()
+endif()
+if(MONO_UNITY_SGEN_AS_BDWGC)
+  set(_ksp_runtime_target monobdwgc-2.0)
+else()
+  set(_ksp_runtime_target monosgen-2.0)
 endif()
 
 if(MONO_HOST_WINDOWS)
@@ -227,7 +226,7 @@ add_custom_target(package-ksp
   # libmonobdwgc-2.0 (mono-2.0-bdwgc.dll on Windows) is Unity's fixed name for
   # its embedded runtime, whichever collector backs it. The rename below is
   # the same whether _ksp_runtime_target built under that name already or
-  # under monoboehm-2.0.
+  # under monosgen-2.0.
   COMMAND "${CMAKE_COMMAND}" -E copy
           "$<TARGET_FILE:${_ksp_runtime_target}>" "${_ksp_stage}/${_ksp_native_subdir}/${_ksp_runtime_name}"
   COMMAND "${CMAKE_COMMAND}" -E copy

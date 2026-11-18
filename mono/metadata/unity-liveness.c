@@ -9,6 +9,7 @@
 #include <mono/metadata/object.h>
 #include <mono/metadata/tabledefs.h>
 #include <mono/metadata/threads-types.h>
+#include <mono/metadata/unity-utils.h>
 #include <mono/utils/atomic.h>
 #include <mono/utils/gc_wrapper.h>
 #include <mono/utils/mono-error.h>
@@ -28,8 +29,6 @@
 #else
 #error need to implement liveness GC API
 #endif
-
-typedef struct _LivenessState LivenessState;
 
 #define k_block_size (8 * 1024)
 #define k_array_elements_per_block ((k_block_size - 3 * sizeof (void*)) / sizeof (gpointer))
@@ -58,10 +57,6 @@ typedef struct _custom_block_array_iterator {
 } custom_block_array_iterator;
 
 
-typedef void(*register_object_callback) (gpointer *arr, int size, void *callback_userdata);
-typedef void(*WorldStateChanged) ();
-typedef void *(*ReallocateArray) (void *ptr, int size, void *callback_userdata);
-
 typedef struct _LivenessWalk LivenessWalk;
 
 /* One thread's share of a traversal. */
@@ -87,10 +82,8 @@ struct _LivenessState {
 
 	void *callback_userdata;
 
-	register_object_callback filter_callback;
-	ReallocateArray reallocateArray;
-
-	WorldStateChanged on_world_started;
+	MonoUnityLivenessCallback filter_callback;
+	MonoUnityLivenessReallocate reallocateArray;
 
 	gboolean heap_validation_skipped_gchandles;
 };
@@ -239,19 +232,8 @@ const int kMaxTraverseRecursionDepth = 128;
 #define k_roots_per_claim 64
 
 /* Liveness calculation */
-MONO_API LivenessState * mono_unity_liveness_allocate_struct(MonoClass *filter, guint max_count, register_object_callback callback, void *callback_userdata, ReallocateArray reallocateArray);
-MONO_API void mono_unity_liveness_stop_gc_world (void);
 MONO_API void mono_validate_object_pointer (MonoObject *object);
 MONO_API void mono_validate_string_pointer (MonoString *string);
-MONO_API void mono_unity_liveness_finalize(LivenessState *state);
-MONO_API void mono_unity_liveness_start_gc_world (void);
-MONO_API void mono_unity_liveness_free_struct(LivenessState *state);
-
-MONO_API LivenessState * mono_unity_liveness_calculation_begin(MonoClass *filter, guint max_count, register_object_callback callback, void *callback_userdata, WorldStateChanged onWorldStarted, WorldStateChanged onWorldStopped);
-MONO_API void mono_unity_liveness_calculation_end(LivenessState *state);
-
-MONO_API void mono_unity_liveness_calculation_from_root(MonoObject *root, LivenessState *state);
-MONO_API void mono_unity_liveness_calculation_from_statics(LivenessState *state);
 MONO_API void mono_unity_heap_validation_from_statics(LivenessState* state);
 MONO_API gboolean mono_unity_heap_validation_gchandles_skipped(LivenessState* state);
 
@@ -1109,7 +1091,22 @@ void mono_unity_liveness_calculation_from_root(MonoObject *root, LivenessState *
 	mono_filter_objects(liveness_state);
 }
 
-LivenessState * mono_unity_liveness_allocate_struct(MonoClass *filter, guint max_count, register_object_callback callback, void *callback_userdata, ReallocateArray reallocateArray)
+/* A suspended thread can hold the CRT heap lock while the walk needs more blocks. */
+static void *
+default_liveness_reallocate_array(void *ptr, int size, void *callback_userdata)
+{
+	g_assert (size == 0 || size == k_block_size);
+	if (size == 0) {
+		mono_vfree (ptr, k_block_size, MONO_MEM_ACCOUNT_OTHER);
+		return NULL;
+	}
+	void *block = mono_valloc (NULL, k_block_size, MONO_MMAP_READ | MONO_MMAP_WRITE, MONO_MEM_ACCOUNT_OTHER);
+	if (!block)
+		g_error ("liveness: out of memory mapping a %d-byte block", k_block_size);
+	return block;
+}
+
+LivenessState * mono_unity_liveness_allocate_struct(MonoClass *filter, guint max_count, MonoUnityLivenessCallback callback, void *callback_userdata, MonoUnityLivenessReallocate reallocateArray)
 {
 	LivenessState *state = NULL;
 
@@ -1121,7 +1118,7 @@ LivenessState * mono_unity_liveness_allocate_struct(MonoClass *filter, guint max
 
 	state->callback_userdata = callback_userdata;
 	state->filter_callback = callback;
-	state->reallocateArray = reallocateArray;
+	state->reallocateArray = reallocateArray ? reallocateArray : default_liveness_reallocate_array;
 
 	state->n_workers = 1 + liveness_pool.n_threads;
 	state->workers = g_new0(LivenessWorker, state->n_workers);
@@ -1165,76 +1162,4 @@ void mono_unity_liveness_free_struct(LivenessState *state)
 	}
 	g_free(state->workers);
 	g_free(state);
-}
-
-void mono_unity_liveness_stop_gc_world (void)
-{
-#if defined(HAVE_SGEN_GC)
-	/* sgen_stop_world()/sgen_restart_world() require the GC lock held for
-	 * as long as the world stays stopped, the same contract
-	 * mono_gc_stop_world()/mono_gc_restart_world() keep in sgen-mono.c. */
-	sgen_gc_lock ();
-	sgen_stop_world (0, FALSE);
-	/* A stopped world leaves the concurrent mark and sweep workers running,
-	 * and they read the vtable word the walk marks. */
-	sgen_finish_concurrent_work ("unity liveness", FALSE);
-#elif defined(HAVE_BOEHM_GC)
-	GC_stop_world_external ();
-#else
-#error need to implement liveness GC API
-#endif
-}
-
-void mono_unity_liveness_start_gc_world (void)
-{
-#if defined(HAVE_SGEN_GC)
-	sgen_restart_world (0, FALSE);
-	sgen_gc_unlock ();
-#elif defined(HAVE_BOEHM_GC)
-	GC_start_world_external ();
-#else
-#error need to implement liveness GC API
-#endif
-}
-
-/*
- * Unity's scripting_liveness_calculation_begin() tail-calls straight into this
- * function rather than going through mono_unity_liveness_allocate_struct(), so
- * there's no caller-supplied ReallocateArray on this path. The walk calls this
- * with the world stopped, when a suspended thread can hold the CRT heap lock.
- * Blocks are therefore mapped pages rather than malloc'd.
- */
-static void * default_liveness_reallocate_array(void *ptr, int size, void *callback_userdata)
-{
-	g_assert (size == 0 || size == k_block_size);
-	if (size == 0) {
-		mono_vfree (ptr, k_block_size, MONO_MEM_ACCOUNT_OTHER);
-		return NULL;
-	}
-	void *block = mono_valloc (NULL, k_block_size, MONO_MMAP_READ | MONO_MMAP_WRITE, MONO_MEM_ACCOUNT_OTHER);
-	if (!block)
-		g_error ("liveness: out of memory mapping a %d-byte block", k_block_size);
-	return block;
-}
-
-LivenessState * mono_unity_liveness_calculation_begin(MonoClass *filter, guint max_count, register_object_callback callback, void *callback_userdata, WorldStateChanged onWorldStarted, WorldStateChanged onWorldStopped)
-{
-	LivenessState *state = mono_unity_liveness_allocate_struct(filter, max_count, callback, callback_userdata, default_liveness_reallocate_array);
-	state->on_world_started = onWorldStarted;
-	mono_unity_liveness_stop_gc_world();
-	if (onWorldStopped)
-		onWorldStopped();
-	// Until the world restarts, a call to malloc can deadlock on a lock a
-	// suspended thread holds.
-	return state;
-}
-
-void mono_unity_liveness_calculation_end(LivenessState *state)
-{
-	WorldStateChanged on_world_started = state->on_world_started;
-	mono_unity_liveness_finalize(state);
-	mono_unity_liveness_start_gc_world();
-	if (on_world_started)
-		on_world_started();
-	mono_unity_liveness_free_struct(state);
 }
