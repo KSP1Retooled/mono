@@ -128,6 +128,13 @@ namespace System.Web.Util
 
 			return input;
 		}
+#if UNITY_JIT && UNITY_WIN_PLATFORM
+		protected internal virtual string JavaScriptStringEncode (string value)
+		{
+			throw new PlatformNotSupportedException ();
+		}
+#endif
+
 		protected internal virtual void HtmlAttributeEncode (string value, TextWriter output)
 		{
 
