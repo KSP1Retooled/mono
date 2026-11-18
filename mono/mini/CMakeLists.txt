@@ -227,13 +227,13 @@ if(MONO_ENABLE_SGEN AND MONO_ENABLE_LIBRARIES)
 
   if(MONO_UNITY_SGEN_AS_BDWGC)
     _mono_add_runtime_library(monobdwgc-2.0 OBJECTS ${MONO_SGEN_OBJECTS})
+    if(MONO_HOST_WINDOWS)
+      set_target_properties(monobdwgc-2.0 PROPERTIES RUNTIME_OUTPUT_NAME mono-2.0-bdwgc)
+    endif()
   endif()
 endif()
 if(MONO_ENABLE_BOEHM AND MONO_ENABLE_LIBRARIES)
   _mono_add_runtime_library(monoboehm-2.0 OBJECTS ${MONO_BOEHM_OBJECTS} EXTRA monogc)
-  if(MONO_HOST_WINDOWS)
-    set_target_properties(monoboehm-2.0 PROPERTIES RUNTIME_OUTPUT_NAME mono-2.0-bdwgc)
-  endif()
 endif()
 
 # libtool built a static archive alongside every shared library, and embedders
