@@ -34,7 +34,10 @@
 
 #if HAVE_BOEHM_GC
 #include <mono/utils/gc_wrapper.h>
+#endif
 #include <mono/metadata/gc-internals.h>
+#if HAVE_SGEN_GC
+#include <mono/sgen/sgen-gc.h>
 #endif
 
 #include <glib.h>
@@ -1933,9 +1936,8 @@ mono_unity_class_field_is_literal(MonoClassField *field)
 
 // GC world control
 MONO_API void
-mono_unity_stop_gc_world()
+mono_unity_stop_gc_world(void)
 {
-#if HAVE_BOEHM_GC
 	// Metadata access does mono_loader_lock. We access it when we capture classes 
 	// and other information. So does the debugger, which can create a deadlock.
 	mono_loader_lock();
@@ -1943,22 +1945,29 @@ mono_unity_stop_gc_world()
 	// holding lock, as mono_unity_domain_mempool_chunk_foreach will need it for:
 	// mono_unity_domain_mempool_chunk_foreach -> mono_mem_manager_lock -> mono_domain_lock
 	mono_domain_lock(mono_domain_get());
+#if HAVE_BOEHM_GC
 	GC_stop_world_external();
+#elif HAVE_SGEN_GC
+	mono_gc_stop_world();
+	/* Concurrent GC workers can still read the vtable words liveness marks. */
+	sgen_finish_concurrent_work("Unity stopped world", FALSE);
 #else
 	g_assert_not_reached();
 #endif
 }
 
 MONO_API void
-mono_unity_start_gc_world()
+mono_unity_start_gc_world(void)
 {
 #if HAVE_BOEHM_GC
 	GC_start_world_external();
-	mono_domain_unlock(mono_domain_get());
-	mono_loader_unlock();
+#elif HAVE_SGEN_GC
+	mono_gc_restart_world();
 #else
 	g_assert_not_reached();
 #endif
+	mono_domain_unlock(mono_domain_get());
+	mono_loader_unlock();
 }
 
 #if HAVE_BOEHM_GC

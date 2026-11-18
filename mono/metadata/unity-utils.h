@@ -327,6 +327,15 @@ MONO_API MonoVTable * mono_unity_class_try_get_vtable (MonoDomain *domain, MonoC
 MONO_API uint32_t mono_unity_class_get_data_size (MonoClass *klass);
 MONO_API void * mono_unity_vtable_get_static_field_data (MonoVTable *vTable);
 MONO_API gboolean mono_unity_class_field_is_literal (MonoClassField *field);
+typedef struct _LivenessState LivenessState;
+typedef void (*MonoUnityLivenessCallback) (gpointer *objects, int count, void *user_data);
+typedef void *(*MonoUnityLivenessReallocate) (void *ptr, int size, void *user_data);
+MONO_API LivenessState *mono_unity_liveness_allocate_struct (MonoClass *filter, guint max_count,
+	MonoUnityLivenessCallback callback, void *user_data, MonoUnityLivenessReallocate reallocate);
+MONO_API void mono_unity_liveness_calculation_from_statics (LivenessState *state);
+MONO_API void mono_unity_liveness_calculation_from_root (MonoObject *root, LivenessState *state);
+MONO_API void mono_unity_liveness_finalize (LivenessState *state);
+MONO_API void mono_unity_liveness_free_struct (LivenessState *state);
 MONO_API void mono_unity_stop_gc_world (void);
 MONO_API void mono_unity_start_gc_world (void);
 MONO_API void* mono_class_get_userdata (MonoClass* klass);

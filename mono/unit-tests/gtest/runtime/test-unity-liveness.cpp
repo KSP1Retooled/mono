@@ -3,7 +3,7 @@
  * the managed heap with the world stopped.
  *
  * Each case checks that every object the walk reaches is reported once and
- * that no mark bit outlives mono_unity_liveness_calculation_end (). CMake
+ * that no mark bit outlives mono_unity_liveness_finalize (). CMake
  * runs the suite once with one walker thread and once with several.
  */
 
@@ -16,6 +16,7 @@
 #include <mono/metadata/assembly.h>
 #include <mono/metadata/assembly-internals.h>
 #include <mono/metadata/object.h>
+#include <mono/metadata/unity-utils.h>
 #include <mono/utils/mono-error-internals.h>
 
 #include <gtest/gtest.h>
@@ -27,19 +28,6 @@
 #include <vector>
 
 #include "harness.hpp"
-
-extern "C" {
-typedef struct _LivenessState LivenessState;
-typedef void (*register_object_callback) (gpointer *arr, int size, void *callback_userdata);
-typedef void (*WorldStateChanged) ();
-
-LivenessState *mono_unity_liveness_calculation_begin (MonoClass *filter, guint max_count,
-	register_object_callback callback, void *callback_userdata,
-	WorldStateChanged onWorldStarted, WorldStateChanged onWorldStopped);
-void mono_unity_liveness_calculation_end (LivenessState *state);
-void mono_unity_liveness_calculation_from_statics (LivenessState *state);
-void mono_unity_liveness_calculation_from_root (MonoObject *root, LivenessState *state);
-}
 
 namespace {
 
@@ -120,6 +108,20 @@ protected:
 			ASSERT_EQ (tracked, mono_object_class (object));
 		}
 	}
+
+	LivenessState *begin_walk (std::vector<MonoObject *> &found)
+	{
+		LivenessState *state = mono_unity_liveness_allocate_struct (tracked, 0, collect, &found, nullptr);
+		mono_unity_stop_gc_world ();
+		return state;
+	}
+
+	void end_walk (LivenessState *state)
+	{
+		mono_unity_liveness_finalize (state);
+		mono_unity_start_gc_world ();
+		mono_unity_liveness_free_struct (state);
+	}
 };
 
 TEST_F (UnityLiveness, FromStaticsReportsEachReachableObjectOnce)
@@ -128,10 +130,9 @@ TEST_F (UnityLiveness, FromStaticsReportsEachReachableObjectOnce)
 	std::vector<MonoObject *> found;
 	found.reserve (expected);
 
-	LivenessState *state = mono_unity_liveness_calculation_begin (
-		tracked, 0, collect, &found, nullptr, nullptr);
+	LivenessState *state = begin_walk (found);
 	mono_unity_liveness_calculation_from_statics (state);
-	mono_unity_liveness_calculation_end (state);
+	end_walk (state);
 
 	expect_each_tracked_once (found, expected);
 }
@@ -145,12 +146,11 @@ TEST_F (UnityLiveness, FromRootReportsOnlyWhatStaticsDidNot)
 	std::vector<MonoObject *> found;
 	found.reserve (expected + fresh);
 
-	LivenessState *state = mono_unity_liveness_calculation_begin (
-		tracked, 0, collect, &found, nullptr, nullptr);
+	LivenessState *state = begin_walk (found);
 	mono_unity_liveness_calculation_from_statics (state);
 	size_t from_statics = found.size ();
 	mono_unity_liveness_calculation_from_root (detached, state);
-	mono_unity_liveness_calculation_end (state);
+	end_walk (state);
 	mono_gchandle_free_internal (handle);
 
 	EXPECT_EQ ((size_t) expected, from_statics);
@@ -163,10 +163,9 @@ TEST_F (UnityLiveness, ManySmallObjects)
 	std::vector<MonoObject *> found;
 	found.reserve (expected);
 
-	LivenessState *state = mono_unity_liveness_calculation_begin (
-		tracked, 0, collect, &found, nullptr, nullptr);
+	LivenessState *state = begin_walk (found);
 	mono_unity_liveness_calculation_from_statics (state);
-	mono_unity_liveness_calculation_end (state);
+	end_walk (state);
 
 	expect_each_tracked_once (found, expected);
 }
@@ -185,12 +184,11 @@ TEST_F (UnityLiveness, DISABLED_Benchmark)
 	for (int run = 0; run < 5; run++) {
 		std::vector<MonoObject *> found;
 		found.reserve (16 * 1024 * 1024);
-		LivenessState *state = mono_unity_liveness_calculation_begin (
-			tracked, 0, collect, &found, nullptr, nullptr);
+		LivenessState *state = begin_walk (found);
 		auto start = std::chrono::steady_clock::now ();
 		mono_unity_liveness_calculation_from_statics (state);
 		auto walked = std::chrono::steady_clock::now ();
-		mono_unity_liveness_calculation_end (state);
+		end_walk (state);
 		auto ended = std::chrono::steady_clock::now ();
 		printf ("from_statics %.2f ms, end %.2f ms, %zu objects\n",
 			std::chrono::duration<double, std::milli> (walked - start).count (),
