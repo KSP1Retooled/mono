@@ -34,7 +34,7 @@ public class UnsafeIntrinsicsTest
 		return 0;
 	}
 
-	// String's own indexer is `Unsafe.Add (ref m_firstChar, index)`
+	// String's own indexer is `Unsafe.Add (ref _firstChar, index)`
 	// (ReferenceSources/String.cs).
 	static void StringIndexerTest ()
 	{
