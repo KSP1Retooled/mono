@@ -3,8 +3,6 @@ name: Release
 on:
   release:
     types: [published]
-  push:
-    branches: [release-workflow]
   pull_request:
     paths: [".github/workflows/release.yml"]
   workflow_dispatch:
@@ -230,7 +228,7 @@ jobs:
   publish:
     name: Publish
     needs: [build-linux, build-windows]
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag')
     runs-on: ubuntu-24.04
 
     permissions:
@@ -247,7 +245,7 @@ jobs:
       - name: Attach the packages to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || github.ref_name }}
         run: >
           gh release upload "$TAG" packages/*.zip
           --repo "$GITHUB_REPOSITORY" --clobber
