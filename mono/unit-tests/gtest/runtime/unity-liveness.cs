@@ -129,6 +129,14 @@ public class LivenessRoots
 		return detached;
 	}
 
+	public static Tracked[] MakeIsolated (int count)
+	{
+		Tracked[] isolated = new Tracked[count];
+		for (int i = 0; i < isolated.Length; i++)
+			isolated[i] = new Tracked ();
+		return isolated;
+	}
+
 	public static void Drop ()
 	{
 		array = null;

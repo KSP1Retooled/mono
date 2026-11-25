@@ -21,9 +21,11 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -155,6 +157,121 @@ TEST_F (UnityLiveness, FromRootReportsOnlyWhatStaticsDidNot)
 
 	EXPECT_EQ ((size_t) expected, from_statics);
 	expect_each_tracked_once (found, expected + fresh);
+}
+
+/* Neither wait takes a lock, which a thread the stopped world suspended can hold. */
+void wait_for (const std::atomic<int> &counter, int value)
+{
+	while (counter.load () < value)
+		std::this_thread::yield ();
+}
+
+void meet (std::atomic<int> &counter, int parties)
+{
+	counter++;
+	wait_for (counter, parties);
+}
+
+/* The walks Unity's asset collector runs: one state for each of these threads,
+ * none of which is attached to the runtime. */
+struct RootWalkers {
+	static const int n_threads = 16;
+	static const int per_root = 2000;
+
+	std::vector<std::vector<MonoObject *>> found;
+	std::vector<LivenessState *> states;
+	std::vector<std::thread> threads;
+	std::atomic<int> started { 0 }, walk { 0 }, walked { 0 }, finished { 0 };
+
+	/* The finalize calls wait for `walked` to reach n_threads + extra_parties. */
+	void start (MonoClass *filter, int extra_parties)
+	{
+		found.resize (n_threads);
+		for (int i = 0; i < n_threads; i++) {
+			found [i].reserve (per_root);
+			states.push_back (mono_unity_liveness_allocate_struct (filter, 0, collect, &found [i], nullptr));
+		}
+		for (int i = 0; i < n_threads; i++) {
+			threads.emplace_back ([this, i, extra_parties] {
+				started++;
+				wait_for (walk, 1);
+				mono_unity_liveness_calculation_from_root (root_objects [i], states [i]);
+				meet (walked, n_threads + extra_parties);
+				mono_unity_liveness_finalize (states [i]);
+				finished++;
+			});
+		}
+		wait_for (started, n_threads);
+	}
+
+	void add_root (MonoObject *root)
+	{
+		root_objects.push_back (root);
+		roots.push_back (mono_gchandle_new_internal (root, TRUE));
+	}
+
+	void stop ()
+	{
+		for (std::thread &thread : threads)
+			thread.join ();
+		for (LivenessState *state : states)
+			mono_unity_liveness_free_struct (state);
+		for (MonoGCHandle root : roots)
+			mono_gchandle_free_internal (root);
+	}
+
+private:
+	std::vector<MonoObject *> root_objects;
+	std::vector<MonoGCHandle> roots;
+};
+
+TEST_F (UnityLiveness, ThreadsFinalizeConcurrently)
+{
+	for (int round = 0; round < 20; round++) {
+		RootWalkers walkers;
+		int count = RootWalkers::per_root;
+		for (int i = 0; i < RootWalkers::n_threads; i++)
+			walkers.add_root (invoke ("MakeIsolated", &count));
+		walkers.start (tracked, 0);
+
+		mono_unity_stop_gc_world ();
+		walkers.walk = 1;
+		wait_for (walkers.finished, RootWalkers::n_threads);
+		mono_unity_start_gc_world ();
+		walkers.stop ();
+
+		for (const auto &found : walkers.found)
+			expect_each_tracked_once (found, RootWalkers::per_root);
+	}
+}
+
+TEST_F (UnityLiveness, FromStaticsWhileThreadsFinalize)
+{
+	int expected = invoke_int ("Build", 20000);
+
+	for (int round = 0; round < 20; round++) {
+		RootWalkers walkers;
+		int count = RootWalkers::per_root;
+		for (int i = 0; i < RootWalkers::n_threads; i++)
+			walkers.add_root (invoke ("MakeIsolated", &count));
+		walkers.start (tracked, 1);
+		std::vector<MonoObject *> found;
+		found.reserve (expected);
+
+		LivenessState *state = begin_walk (found);
+		walkers.walk = 1;
+		meet (walkers.walked, RootWalkers::n_threads + 1);
+		mono_unity_liveness_calculation_from_statics (state);
+		mono_unity_liveness_finalize (state);
+		wait_for (walkers.finished, RootWalkers::n_threads);
+		mono_unity_start_gc_world ();
+		mono_unity_liveness_free_struct (state);
+		walkers.stop ();
+
+		expect_each_tracked_once (found, expected);
+		for (const auto &isolated : walkers.found)
+			expect_each_tracked_once (isolated, RootWalkers::per_root);
+	}
 }
 
 TEST_F (UnityLiveness, ManySmallObjects)
