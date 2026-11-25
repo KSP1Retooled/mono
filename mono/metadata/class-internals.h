@@ -113,6 +113,8 @@ struct _MonoMethodWrapper {
 struct _MonoDynamicMethod {
 	MonoMethodWrapper method;
 	MonoAssembly *assembly;
+	/* Weak, and tracks resurrection. */
+	MonoGCHandle owner;
 };
 
 struct _MonoMethodPInvoke {

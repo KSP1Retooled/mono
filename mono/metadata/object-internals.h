@@ -915,10 +915,7 @@ void
 mono_runtime_free_method    (MonoDomain *domain, MonoMethod *method);
 
 MonoGCHandle
-mono_method_get_code_owner_handle (MonoDomain *domain, MonoMethod *method);
-
-MonoObject *
-mono_method_get_code_owner (MonoGCHandle owner);
+mono_method_get_code_owner_handle (MonoMethod *method);
 
 void
 mono_install_callbacks      (MonoRuntimeCallbacks *cbs);

@@ -1709,6 +1709,16 @@ mono_gc_get_logfile (void)
 }
 
 void
+mono_gc_register_code_owner (gpointer code, gsize size, MonoGCHandle owner)
+{
+}
+
+void
+mono_gc_unregister_code_owner (gpointer code, gsize size)
+{
+}
+
+void
 mono_gc_conservatively_scan_area (void *start, void *end)
 {
 	g_assert_not_reached ();

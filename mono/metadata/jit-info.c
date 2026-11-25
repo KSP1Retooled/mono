@@ -712,9 +712,24 @@ jit_info_table_add (MonoDomain *domain, MonoJitInfoTable *volatile *table_ptr, M
 }
 
 void
+mono_jit_info_register_code_owner (MonoJitInfo *ji, MonoMethod *method)
+{
+	MonoGCHandle owner = mono_method_get_code_owner_handle (method);
+
+	if (!owner)
+		return;
+
+	ji->has_code_owner = TRUE;
+	mono_gc_register_code_owner (ji->code_start, ji->code_size, owner);
+}
+
+void
 mono_jit_info_table_add (MonoDomain *domain, MonoJitInfo *ji)
 {
 	g_assert (ji->d.method != NULL);
+
+	if (!ji->is_trampoline)
+		mono_jit_info_register_code_owner (ji, ji->d.method);
 
 	mono_domain_lock (domain);
 
@@ -806,6 +821,9 @@ void
 mono_jit_info_table_remove (MonoDomain *domain, MonoJitInfo *ji)
 {
 	MonoJitInfoTable *table;
+
+	if (ji->has_code_owner)
+		mono_gc_unregister_code_owner (ji->code_start, ji->code_size);
 
 	mono_domain_lock (domain);
 	table = domain->jit_info_table;

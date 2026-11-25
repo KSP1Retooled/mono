@@ -164,6 +164,7 @@ set(metadata_sgen_sources
   sgen-tarjan-bridge.c
   sgen-toggleref.c
   sgen-stw.c
+  sgen-code-owners.cpp
   sgen-mono.c)
 
 # mono-config-dirs.c is a library of its own so that changing --prefix only
