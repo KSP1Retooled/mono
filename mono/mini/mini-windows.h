@@ -66,6 +66,11 @@ mono_arch_unwindinfo_remove_pc_range_in_table(const gpointer code);
 PRUNTIME_FUNCTION
 mono_arch_unwindinfo_insert_rt_func_in_table(const gpointer code, gsize code_size, const gpointer unwinddata);
 
+/// Removes the records for code in the \p size bytes at \p code, so that other
+/// code can be put there. A record must not straddle either end.
+void
+mono_arch_unwindinfo_remove_rt_funcs_in_table(const gpointer code, gsize size);
+
 guint
 mono_arch_unwindinfo_init_method_unwind_info(gpointer cfg);
 

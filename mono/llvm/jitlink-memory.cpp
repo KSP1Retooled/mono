@@ -7,6 +7,8 @@
 
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ExecutionEngine/JITLink/JITLink.h>
+#include <llvm/Support/Alignment.h>
+#include <llvm/Support/MathExtras.h>
 #include <llvm/Support/Memory.h>
 
 #include <algorithm>
@@ -106,6 +108,17 @@ CodeArena::publish_function_table (void *table, size_t size)
 #endif
 }
 
+void
+CodeArena::retract_function_table (void *base, size_t size)
+{
+#ifdef HOST_WIN32
+	mono_arch_unwindinfo_remove_rt_funcs_in_table (base, size);
+#else
+	(void) base;
+	(void) size;
+#endif
+}
+
 Expected<char *>
 CodeArena::reserve (size_t size, size_t align)
 {
@@ -162,10 +175,60 @@ CodeArena::unreserve (char *base, size_t size)
 	mono_code_manager_commit (code_, base, int (size), 0);
 }
 
+/// The size of the class a block of \p size bytes comes from: 32, and then four
+/// steps to each power of two.
+static size_t
+block_class (size_t size)
+{
+	if (size <= 32)
+		return 32;
+
+	size_t step = size_t (1) << (Log2_64 (size - 1) - 2);
+
+	return alignTo (size, step);
+}
+
+Expected<char *>
+CodeArena::reserve_block (size_t size, size_t align)
+{
+	size_t block = block_class (size);
+
+	{
+		std::lock_guard<std::mutex> lock (mutex_);
+		auto it = free_.find (block);
+
+		if (it != free_.end ()) {
+			std::vector<char *> &blocks = it->second;
+			auto at = std::find_if (blocks.rbegin (), blocks.rend (), [align] (char *base) {
+				return uintptr_t (base) % align == 0;
+			});
+
+			if (at != blocks.rend ()) {
+				char *base = *at;
+
+				std::swap (*at, blocks.back ());
+				blocks.pop_back ();
+				return base;
+			}
+		}
+	}
+
+	return reserve (block, std::max (align, code_manager_alignment));
+}
+
+void
+CodeArena::release_block (char *base, size_t size)
+{
+	std::lock_guard<std::mutex> lock (mutex_);
+
+	free_[block_class (size)].push_back (base);
+}
+
 class CodeMemoryManager::InFlight final : public jitlink::JITLinkMemoryManager::InFlightAlloc {
 public:
-	InFlight (CodeMemoryManager *owner, jitlink::LinkGraph &g, char *base, size_t size)
-	    : owner_ (owner), graph_ (&g), base_ (base), size_ (size)
+	InFlight (CodeMemoryManager *owner, jitlink::LinkGraph &g, char *base, size_t size,
+	          bool reclaimable)
+	    : owner_ (owner), graph_ (&g), base_ (base), size_ (size), reclaimable_ (reclaimable)
 	{
 	}
 
@@ -196,7 +259,7 @@ public:
 		sys::Memory::InvalidateInstructionCache (base_, size_);
 
 		FinalizedAlloc finalized =
-			owner_->record (base_, size_, std::move (*dealloc));
+			owner_->record (base_, size_, reclaimable_, std::move (*dealloc));
 
 		timed.reset ();
 		on_finalized (std::move (finalized));
@@ -205,7 +268,10 @@ public:
 	void abandon (OnAbandonedFunction on_abandoned) override
 	{
 		settled_ = true;
-		owner_->arena_->unreserve (base_, size_);
+		if (reclaimable_)
+			owner_->reclaim (base_, size_);
+		else
+			owner_->arena_->unreserve (base_, size_);
 		on_abandoned (Error::success ());
 	}
 
@@ -214,13 +280,48 @@ private:
 	jitlink::LinkGraph *graph_;
 	char *base_;
 	size_t size_;
+	bool reclaimable_;
 	bool settled_ = false;
 };
 
 void
-CodeMemoryManager::allocate (const jitlink::JITLinkDylib *, jitlink::LinkGraph &g,
+CodeMemoryManager::set_reclaimable (const jitlink::JITLinkDylib *jd)
+{
+	std::lock_guard<std::mutex> lock (mutex_);
+
+	reclaimable_.insert (jd);
+}
+
+void
+CodeMemoryManager::clear_reclaimable (const jitlink::JITLinkDylib *jd)
+{
+	std::lock_guard<std::mutex> lock (mutex_);
+
+	reclaimable_.erase (jd);
+}
+
+void
+CodeMemoryManager::reclaim (char *base, size_t size)
+{
+	arena_->retract_function_table (base, size);
+
+	// int3, so that a stale call stops here and not in the next object.
+	memset (base, 0xcc, size);
+	arena_->release_block (base, size);
+}
+
+void
+CodeMemoryManager::allocate (const jitlink::JITLinkDylib *jd, jitlink::LinkGraph &g,
                              OnAllocatedFunction on_allocated)
 {
+	bool reclaimable;
+
+	{
+		std::lock_guard<std::mutex> lock (mutex_);
+
+		reclaimable = reclaimable_.erase (jd);
+	}
+
 	jitlink::BasicLayout layout (g);
 	std::vector<std::pair<jitlink::BasicLayout::Segment *, uint64_t>> placed;
 	uint64_t extent = 0;
@@ -246,7 +347,8 @@ CodeMemoryManager::allocate (const jitlink::JITLinkDylib *, jitlink::LinkGraph &
 	// perf dump gives this one's frame descriptions.
 	size_t size = extent + (extent != 0 ? perf::code_slack () : 0);
 
-	Expected<char *> base = arena_->reserve (size, align.value ());
+	Expected<char *> base = reclaimable ? arena_->reserve_block (size, align.value ())
+	                                    : arena_->reserve (size, align.value ());
 
 	if (!base)
 		return on_allocated (base.takeError ());
@@ -261,21 +363,24 @@ CodeMemoryManager::allocate (const jitlink::JITLinkDylib *, jitlink::LinkGraph &
 	}
 
 	if (Error err = layout.apply ()) {
-		arena_->unreserve (*base, size);
+		if (reclaimable)
+			reclaim (*base, size);
+		else
+			arena_->unreserve (*base, size);
 		return on_allocated (std::move (err));
 	}
 
-	on_allocated (std::make_unique<InFlight> (this, g, *base, size));
+	on_allocated (std::make_unique<InFlight> (this, g, *base, size, reclaimable));
 }
 
 jitlink::JITLinkMemoryManager::FinalizedAlloc
-CodeMemoryManager::record (char *base, size_t size,
+CodeMemoryManager::record (char *base, size_t size, bool reclaimable,
                            std::vector<orc::shared::WrapperFunctionCall> actions)
 {
 	std::lock_guard<std::mutex> lock (mutex_);
 	FinalizedInfo *info = infos_.Allocate<FinalizedInfo> ();
 
-	new (info) FinalizedInfo{base, size, std::move (actions)};
+	new (info) FinalizedInfo{base, size, reclaimable, std::move (actions)};
 	return FinalizedAlloc (orc::ExecutorAddr::fromPtr (info));
 }
 
@@ -298,6 +403,9 @@ CodeMemoryManager::deallocate (std::vector<FinalizedAlloc> allocs,
 				all = joinErrors (std::move (all), std::move (err));
 			info->dealloc_actions.pop_back ();
 		}
+
+		if (info->reclaimable)
+			reclaim (info->base, info->size);
 
 		std::lock_guard<std::mutex> lock (mutex_);
 		info->~FinalizedInfo ();

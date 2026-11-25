@@ -1,6 +1,8 @@
 #ifndef MONO_LLVM_JITLINK_MEMORY_HPP
 #define MONO_LLVM_JITLINK_MEMORY_HPP
 
+#include <llvm/ADT/DenseMap.h>
+#include <llvm/ADT/DenseSet.h>
 #include <llvm/ExecutionEngine/JITLink/JITLinkMemoryManager.h>
 #include <llvm/Support/Allocator.h>
 #include <llvm/Support/Error.h>
@@ -16,7 +18,8 @@ namespace mono {
 
 /// An arena allocator for executable memory.
 ///
-/// Individual allocations are not freed until the whole arena is.
+/// An allocation from reserve () is not freed until the whole arena is. One from
+/// reserve_block () can be given back on its own.
 class CodeArena {
 public:
 	CodeArena ();
@@ -43,6 +46,20 @@ public:
 	/// added, leaves them where they are.
 	void unreserve (char *base, size_t size);
 
+	/// Reserves size bytes at align, for a later release_block () to give back.
+	///
+	/// The size is rounded up to one of a few classes, and a block is only ever
+	/// given out again whole. So the arena keeps at most what each class had
+	/// reserved at once, whatever order the blocks come and go in.
+	llvm::Expected<char *> reserve_block (size_t size, size_t align);
+
+	/// Gives back a block from reserve_block (), of the size asked for there.
+	///
+	/// Callers must guarantee the code is dead, on the terms ~CodeArena ()
+	/// states. The records a publish_function_table () made for it must be
+	/// retracted first.
+	void release_block (char *base, size_t size);
+
 	/// Hands the OS the records of a linked object's function table, so an
 	/// unwinder outside this runtime can cross the frames they describe.
 	///
@@ -55,9 +72,15 @@ public:
 	/// unwinder reads `.mono_unwind` either way.
 	void publish_function_table (void *table, size_t size);
 
+	/// Takes back every record published for code in the size bytes at base.
+	void retract_function_table (void *base, size_t size);
+
 private:
 	std::mutex mutex_;
 	MonoCodeManager *code_;
+
+	/// The blocks given back, by the size of their class.
+	llvm::DenseMap<size_t, std::vector<char *>> free_;
 };
 
 /// The JITLink memory manager that links objects into a CodeArena.
@@ -79,10 +102,17 @@ public:
 	               llvm::jitlink::LinkGraph &g,
 	               OnAllocatedFunction on_allocated) override;
 
-	/// Runs the object's dealloc actions. The memory itself stays where it is
-	/// until the arena goes.
+	/// Runs the object's dealloc actions, and gives the memory back where the
+	/// object was linked into a dylib set_reclaimable () named. Any other
+	/// object's memory stays where it is until the arena goes.
 	void deallocate (std::vector<FinalizedAlloc> allocs,
 	                 OnDeallocatedFunction on_deallocated) override;
+
+	/// Makes the one object that jd is about to take reclaimable.
+	void set_reclaimable (const llvm::jitlink::JITLinkDylib *jd);
+
+	/// Forgets a set_reclaimable () that no object came for.
+	void clear_reclaimable (const llvm::jitlink::JITLinkDylib *jd);
 
 private:
 	class InFlight;
@@ -90,14 +120,19 @@ private:
 	struct FinalizedInfo {
 		char *base;
 		size_t size;
+		bool reclaimable;
 		std::vector<llvm::orc::shared::WrapperFunctionCall> dealloc_actions;
 	};
 
-	FinalizedAlloc record (char *base, size_t size,
+	FinalizedAlloc record (char *base, size_t size, bool reclaimable,
 	                       std::vector<llvm::orc::shared::WrapperFunctionCall> actions);
+
+	/// Gives a reclaimable object's memory back to the arena.
+	void reclaim (char *base, size_t size);
 
 	std::mutex mutex_;
 	llvm::RecyclingAllocator<llvm::BumpPtrAllocator, FinalizedInfo> infos_;
+	llvm::DenseSet<const llvm::jitlink::JITLinkDylib *> reclaimable_;
 	CodeArena *arena_;
 };
 

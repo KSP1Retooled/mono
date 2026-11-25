@@ -672,6 +672,13 @@ void
 mono_jit_info_table_add    (MonoDomain *domain, MonoJitInfo *ji);
 
 /**
+ * Returns a weak handle on the object whose death frees \p method's code, or NULL where no
+ * object does. \p method can be a wrapper that is freed with a delegate or a dynamic method.
+ */
+MonoGCHandle
+mono_jit_code_owner_handle (MonoMethod *method);
+
+/**
  * Keeps the object that owns \p method's code alive while a thread holds an address in
  * \p ji, until \p ji is removed from the table.
  *

@@ -300,6 +300,7 @@ mono_delegate_to_ftnptr_impl (MonoDelegateHandle delegate, MonoError *error)
 	MonoMethod *method, *wrapper;
 	MonoClass *klass;
 	MonoGCHandle target_handle = 0;
+	MonoGCHandle owner_handle = 0;
 
 	if (MONO_HANDLE_IS_NULL (delegate))
 		goto leave;
@@ -337,8 +338,11 @@ mono_delegate_to_ftnptr_impl (MonoDelegateHandle delegate, MonoError *error)
 		/* Produce a location which can be embedded in JITted code */
 		target_handle = mono_gchandle_new_weakref_from_handle (delegate_target);
 	}
+	/* A shared wrapper would keep a dynamic method's code for the life of its image. */
+	if (target_handle || method->wrapper_type == MONO_WRAPPER_DYNAMIC_METHOD)
+		owner_handle = mono_gchandle_new_weakref_from_handle (MONO_HANDLE_CAST (MonoObject, delegate));
 
-	wrapper = mono_marshal_get_managed_wrapper (method, klass, target_handle, error);
+	wrapper = mono_marshal_get_managed_wrapper (method, klass, target_handle, owner_handle, error);
 	goto_if_nok (error, leave);
 
 	MONO_HANDLE_SETVAL (delegate, delegate_trampoline, gpointer, mono_compile_method_checked (wrapper, error));
@@ -355,6 +359,8 @@ mono_delegate_to_ftnptr_impl (MonoDelegateHandle delegate, MonoError *error)
 leave:
 	if (!is_ok (error) && target_handle != 0)
 		mono_gchandle_free_internal (target_handle);
+	if (!is_ok (error) && owner_handle != 0)
+		mono_gchandle_free_internal (owner_handle);
 	return result;
 }
 
@@ -575,7 +581,7 @@ mono_delegate_free_ftnptr (MonoDelegate *delegate)
 	ptr = (gpointer)mono_atomic_xchg_ptr (&delegate->delegate_trampoline, NULL);
 
 	if (ptr) {
-		MonoGCHandle gchandle;
+		MonoGCHandle gchandle, owner;
 		void **method_data;
 
 		if (!method)
@@ -589,8 +595,28 @@ mono_delegate_free_ftnptr (MonoDelegate *delegate)
 		if (gchandle)
 			mono_gchandle_free_internal (gchandle);
 
+		owner = mono_marshal_get_managed_wrapper_owner (method);
 		mono_runtime_free_method (mono_object_domain (delegate), method);
+		/* The collector can resolve the handle until the wrapper's code is unregistered. */
+		mono_gchandle_free_internal (owner);
 	}
+}
+
+/*
+ * mono_marshal_get_managed_wrapper_owner:
+ *
+ *   Returns a weak handle on the delegate the native-to-managed wrapper WRAPPER is freed
+ * with. WRAPPER must be dynamic.
+ */
+MonoGCHandle
+mono_marshal_get_managed_wrapper_owner (MonoMethod *wrapper)
+{
+	void **method_data = (void **)((MonoMethodWrapper*)wrapper)->method_data;
+
+	g_assert (wrapper->dynamic && wrapper->wrapper_type == MONO_WRAPPER_NATIVE_TO_MANAGED);
+
+	/* The entry behind the target's gchandle. */
+	return (MonoGCHandle)method_data [3];
 }
 
 /* This is a JIT icall, it sets the pending exception (in wrapper) and returns NULL on error */
@@ -4033,14 +4059,15 @@ method_signature_is_blittable (MonoMethodSignature *sig)
 /**
  * mono_marshal_get_managed_wrapper:
  * Generates IL code to call managed methods from unmanaged code 
- * If \p target_handle is \c 0 and \p method is not a dynamic method, the wrapper info will be a
- * \c WrapperInfo structure. Otherwise the caller owns the wrapper, and it is freed as a dynamic method.
+ * If \p owner_handle is \c 0, the wrapper info will be a \c WrapperInfo structure. Otherwise it is a
+ * weak handle on the delegate the wrapper is freed with, and the wrapper is dynamic. A wrapper with a
+ * \p target_handle needs one.
  *
  * If \p delegate_klass is \c NULL, we're creating a wrapper for a function pointer to a method marked with
  * UnamangedCallersOnlyAttribute.
  */
 MonoMethod *
-mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass, MonoGCHandle target_handle, MonoError *error)
+mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass, MonoGCHandle target_handle, MonoGCHandle owner_handle, MonoError *error)
 {
 	MonoMethodSignature *sig, *csig, *invoke_sig;
 	MonoMethodBuilder *mb;
@@ -4050,13 +4077,10 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 	GHashTable *cache;
 	int i;
 	EmitMarshalContext m;
-	gboolean owned;
 
 	g_assert (method != NULL);
+	g_assert (owner_handle || !target_handle);
 	error_init (error);
-
-	/* A shared wrapper would keep a dynamic method's code for the life of its image. */
-	owned = target_handle || method->wrapper_type == MONO_WRAPPER_DYNAMIC_METHOD;
 
 	if (method->flags & METHOD_ATTRIBUTE_PINVOKE_IMPL) {
 		mono_error_set_invalid_program (error, "Failed because method (%s) marked PInvokeCallback (managed method) and extern (unmanaged) simultaneously.", mono_method_full_name (method, TRUE));
@@ -4070,7 +4094,7 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 	 */
 	cache = get_cache (&mono_method_get_wrapper_cache (method)->managed_wrapper_cache, mono_aligned_addr_hash, NULL);
 
-	if (!owned && (res = mono_marshal_find_in_cache (cache, method)))
+	if (!owner_handle && (res = mono_marshal_find_in_cache (cache, method)))
 		return res;
 
 	if (G_UNLIKELY (!delegate_klass)) {
@@ -4114,9 +4138,11 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 
 	/*the target gchandle must be the first entry after size and the wrapper itself.*/
 	mono_mb_add_data (mb, target_handle);
+	if (owner_handle)
+		mono_mb_add_data (mb, owner_handle);
 
 	/* we copy the signature, so that we can modify it */
-	if (owned)
+	if (owner_handle)
 		/* Need to free this later */
 		csig = mono_metadata_signature_dup (invoke_sig);
 	else
@@ -4215,7 +4241,7 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 		return NULL;
 	}
 
-	if (!owned) {
+	if (!owner_handle) {
 		WrapperInfo *info;
 
 		// FIXME: Associate it with the method+delegate_klass pair

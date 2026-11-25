@@ -456,7 +456,7 @@ MonoMethodSignature*
 mono_marshal_get_string_ctor_signature (MonoMethod *method);
 
 MonoMethod *
-mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass, MonoGCHandle this_loc, MonoError *exernal_error);
+mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass, MonoGCHandle this_loc, MonoGCHandle owner_handle, MonoError *exernal_error);
 
 gpointer
 mono_marshal_get_vtfixup_ftnptr (MonoImage *image, guint32 token, guint16 type);
@@ -542,6 +542,9 @@ mono_marshal_free_dynamic_wrappers (MonoMethod *method);
 
 MonoMethod *
 mono_marshal_take_dynamic_invoke_wrapper (MonoMethod *method, WrapperInfo **info);
+
+MonoGCHandle
+mono_marshal_get_managed_wrapper_owner (MonoMethod *wrapper);
 
 void
 mono_marshal_lock_internal (void);

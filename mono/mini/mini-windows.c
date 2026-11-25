@@ -1459,6 +1459,63 @@ mono_arch_unwindinfo_insert_rt_func_in_table(const gpointer code, gsize code_siz
 	return new_rt_func;
 }
 
+void
+mono_arch_unwindinfo_remove_rt_funcs_in_table(const gpointer code, gsize size)
+{
+	AcquireSRWLockShared(&g_dynamic_function_table_lock);
+
+	DynamicFunctionTableEntry* found_entry = find_pc_in_table_no_lock(code);
+
+	if (found_entry != NULL) {
+
+		AcquireSRWLockExclusive(&found_entry->lock);
+
+		gsize begin_offset = (gsize)code - found_entry->begin_range;
+		gsize end_offset = begin_offset + size;
+		gsize entry_count = found_entry->rt_funcs_current_count;
+		gsize first = 0;
+
+		while (first < entry_count && found_entry->rt_funcs[first].BeginAddress < begin_offset)
+			++first;
+
+		gsize last = first;
+		while (last < entry_count && found_entry->rt_funcs[last].BeginAddress < end_offset)
+			++last;
+
+		if (first != last) {
+			// The OS searches the registered array without a lock this code can take, so
+			// the records are dropped from a copy that replaces it.
+			PRUNTIME_FUNCTION new_rt_funcs = g_new0(RUNTIME_FUNCTION, found_entry->rt_funcs_max_count);
+
+			memcpy(new_rt_funcs, found_entry->rt_funcs, first * sizeof(RUNTIME_FUNCTION));
+			memcpy(new_rt_funcs + first, found_entry->rt_funcs + last, (entry_count - last) * sizeof(RUNTIME_FUNCTION));
+
+			if (g_rtl_add_growable_function_table != NULL) {
+				g_rtl_delete_growable_function_table(found_entry->handle);
+				found_entry->handle = NULL;
+			}
+
+			g_free(found_entry->rt_funcs);
+			found_entry->rt_funcs = new_rt_funcs;
+			found_entry->rt_funcs_current_count = entry_count - (last - first);
+
+			if (g_rtl_add_growable_function_table != NULL) {
+				DWORD result = g_rtl_add_growable_function_table(&found_entry->handle,
+					found_entry->rt_funcs, found_entry->rt_funcs_current_count,
+					found_entry->rt_funcs_max_count, found_entry->begin_range, found_entry->end_range);
+				g_assert(!result);
+			}
+
+			// Only included in checked builds. Validates the structure of table after remove.
+			validate_rt_funcs_in_table_no_lock(found_entry);
+		}
+
+		ReleaseSRWLockExclusive(&found_entry->lock);
+	}
+
+	ReleaseSRWLockShared(&g_dynamic_function_table_lock);
+}
+
 static PRUNTIME_FUNCTION
 MONO_GET_RUNTIME_FUNCTION_CALLBACK(DWORD64 ControlPc, IN PVOID Context)
 {

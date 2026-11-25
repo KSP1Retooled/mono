@@ -1643,11 +1643,15 @@ MonoJit::create (CodeArena *arena)
 	 * The memory manager is built inside builder.create (), before there is a
 	 * MonoJit to hold it, so the lambda carries what it needs instead.
 	 */
+	CodeMemoryManager *memory = nullptr;
+
 	builder.setObjectLinkingLayerCreator (
-		[arena] (ExecutionSession &es, jitlink::JITLinkMemoryManager &)
+		[arena, &memory] (ExecutionSession &es, jitlink::JITLinkMemoryManager &)
 			-> Expected<std::unique_ptr<ObjectLayer>> {
-			return std::make_unique<ObjectLinkingLayer> (
-				es, std::make_unique<CodeMemoryManager> (arena));
+			auto made = std::make_unique<CodeMemoryManager> (arena);
+
+			memory = made.get ();
+			return std::make_unique<ObjectLinkingLayer> (es, std::move (made));
 		});
 
 	builder.setCompileFunctionCreator (
@@ -1661,6 +1665,8 @@ MonoJit::create (CodeArena *arena)
 		return jit.takeError ();
 
 	std::unique_ptr<MonoJit> self (new MonoJit (std::move (*jit)));
+
+	self->memory_ = memory;
 
 	// Taking delivery of the module here is what puts its destruction, and its
 	// LLVMContext with it, inside a phase. It is also the moment the object
@@ -2035,10 +2041,10 @@ belongs_to (StringRef entry, StringRef function)
 Expected<CompiledMethod>
 MonoJit::compile (ThreadSafeModule tsm, StringRef entry,
                   ArrayRef<std::pair<StringRef, void *>> module_symbols,
-                  ArrayRef<ProfileCounters> layout)
+                  ArrayRef<ProfileCounters> layout, bool reclaimable)
 {
 	Expected<std::vector<CompiledMethod>> compiled =
-		compile_batch (std::move (tsm), entry, module_symbols, layout);
+		compile_batch (std::move (tsm), entry, module_symbols, layout, reclaimable);
 
 	if (!compiled)
 		return compiled.takeError ();
@@ -2048,7 +2054,7 @@ MonoJit::compile (ThreadSafeModule tsm, StringRef entry,
 Expected<std::vector<CompiledMethod>>
 MonoJit::compile_batch (ThreadSafeModule tsm, ArrayRef<StringRef> entries,
                         ArrayRef<std::pair<StringRef, void *>> module_symbols,
-                        ArrayRef<ProfileCounters> layout)
+                        ArrayRef<ProfileCounters> layout, bool reclaimable)
 {
 	if (entries.empty ())
 		return createStringError (inconvertibleErrorCode (),
@@ -2107,8 +2113,14 @@ MonoJit::compile_batch (ThreadSafeModule tsm, ArrayRef<StringRef> entries,
 	for (StringRef entry : entries)
 		wanted.add (jit_->mangleAndIntern (entry));
 
+	if (reclaimable)
+		memory_->set_reclaimable (&jd);
+
 	Expected<SymbolMap> found = jit_->getExecutionSession ().lookup (
 		makeJITDylibSearchOrder (&jd), std::move (wanted));
+
+	if (reclaimable)
+		memory_->clear_reclaimable (&jd);
 
 	if (!found)
 		return found.takeError ();
@@ -2281,7 +2293,16 @@ MonoJit::remove_dylibs (const std::vector<JITDylib *> &dylibs)
 
 	std::vector<JITDylibSP> owned (dylibs.begin (), dylibs.end ());
 
-	return jit_->getExecutionSession ().removeJITDylibs (std::move (owned));
+	Error removed = jit_->getExecutionSession ().removeJITDylibs (std::move (owned));
+
+	// A dylib's symbol names outlive it in the session's pool. Dropping them
+	// reads the whole pool, so a batch of removals pays for one read.
+	if (dylibs_removed_.fetch_add (dylibs.size ()) + dylibs.size () >= 64) {
+		dylibs_removed_.store (0);
+		jit_->getExecutionSession ().getSymbolStringPool ()->clearDeadEntries ();
+	}
+
+	return removed;
 }
 
 } // namespace mono

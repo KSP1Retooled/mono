@@ -54,8 +54,18 @@ public:
 	/// The slot starts null, so calling through it before the first
 	/// redirect () faults. pool must be arena's own - see ThunkPool.
 	///
+	/// reclaimable is whether release () can give the thunk back. Such a thunk
+	/// never comes out of pool.
+	///
 	/// Returns an error if allocation fails.
-	static llvm::Expected<Thunk> allocate (CodeArena *arena, ThunkPool &pool, void *key = nullptr);
+	static llvm::Expected<Thunk> allocate (CodeArena *arena, ThunkPool &pool,
+	                                       void *key = nullptr, bool reclaimable = false);
+
+	/// Gives a reclaimable thunk's memory back to the arena it came from.
+	///
+	/// The caller proves that nothing can reach the thunk: a later thunk can
+	/// have the same address.
+	void release (CodeArena *arena);
 
 	/// Returns the function pointer for this thunk.
 	void *code () const;

@@ -555,6 +555,7 @@ set(MONO_TESTS_CS_SRC
   bug-60843.cs
   nested_type_visibility.cs
   dynamic-method-churn.cs
+  dynamic-method-code-reuse.cs
   dynamic-method-code-root.cs
   dynamic-method-delegate.cs
   dynamic-method-ftnptr.cs

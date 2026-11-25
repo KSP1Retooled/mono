@@ -712,16 +712,22 @@ jit_info_table_add (MonoDomain *domain, MonoJitInfoTable *volatile *table_ptr, M
 	//jit_info_table_check (table);
 }
 
+MonoGCHandle
+mono_jit_code_owner_handle (MonoMethod *method)
+{
+	if (method->dynamic && method->wrapper_type == MONO_WRAPPER_RUNTIME_INVOKE)
+		method = mono_marshal_get_wrapper_info (method)->d.runtime_invoke.method;
+	else if (method->dynamic && method->wrapper_type == MONO_WRAPPER_NATIVE_TO_MANAGED)
+		return mono_marshal_get_managed_wrapper_owner (method);
+
+	return mono_method_get_code_owner_handle (method);
+}
+
 void
 mono_jit_info_register_code_owner (MonoJitInfo *ji, MonoMethod *method)
 {
-	MonoGCHandle owner;
+	MonoGCHandle owner = mono_jit_code_owner_handle (method);
 
-	/* A dynamic method's own invoke wrapper is freed with the method. */
-	if (method->dynamic && method->wrapper_type == MONO_WRAPPER_RUNTIME_INVOKE)
-		method = mono_marshal_get_wrapper_info (method)->d.runtime_invoke.method;
-
-	owner = mono_method_get_code_owner_handle (method);
 	if (!owner)
 		return;
 

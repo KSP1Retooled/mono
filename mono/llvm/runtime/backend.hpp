@@ -87,8 +87,8 @@ public:
 	/// lets a caller tell "no profile" from "never executed".
 	///
 	/// Returns a copy, because a recompile can replace what the record holds.
-	/// The counter array the copy points at stays readable for as long as the
-	/// domain does.
+	/// The counter array the copy points at stays readable until \p dm's method
+	/// is freed, or the domain is.
 	static std::optional<ProfileCounters> profile_of (MonoDomainMethod &dm);
 
 	static void foreach_body (MonoDomain *domain, MonoMethod *method,

@@ -33,6 +33,7 @@
 #include "builtins.hpp"
 #include "dispatcher.hpp"
 #include "publish-events.hpp"
+#include "reclaim.hpp"
 #include <vector>
 #include "mini-runtime.h"
 #include "stub-jinfo.hpp"
@@ -48,6 +49,7 @@
 #include "mono/metadata/appdomain.h"
 #include "mono/metadata/class-internals.h"
 #include "mono/metadata/domain-internals.h"
+#include "mono/metadata/gc-internals.h"
 #include "mono/metadata/marshal.h"
 #include "mono/utils/mono-threads-api.h"
 #include <chrono>
@@ -140,7 +142,41 @@ MonoBackend::get ()
 struct Owned {
 	std::vector<llvm::orc::JITDylib *> dylibs;
 	std::vector<MonoJitInfo *> jinfos;
+	/// Code no jit info covers, which the collector was told about on its own.
+	std::vector<std::pair<const uint8_t *, size_t>> code_owner_ranges;
+	/// Whether the thunk can be given back.
+	bool reclaimable_thunk = false;
+
+	/// compiled's linker stubs must have been through register_code_owner ().
+	void add (MonoMethod *method, const CompiledMethod &compiled, MonoJitInfo *jinfo)
+	{
+		if (compiled.dylib != nullptr)
+			dylibs.push_back (compiled.dylib);
+		if (jinfo != nullptr)
+			jinfos.push_back (jinfo);
+		if (mono_jit_code_owner_handle (method) != nullptr)
+			code_owner_ranges.insert (code_owner_ranges.end (),
+			                          compiled.linker_stubs.begin (),
+			                          compiled.linker_stubs.end ());
+	}
 };
+
+/// Keeps method alive while a thread holds an address in one of ranges.
+///
+/// Takes the collector's lock, which must not be waited for under a lock that a
+/// thread the collector stops can be waiting for.
+static void
+register_code_owner (MonoMethod *method,
+                     llvm::ArrayRef<std::pair<const uint8_t *, size_t>> ranges)
+{
+	MonoGCHandle owner = mono_jit_code_owner_handle (method);
+
+	if (owner == nullptr)
+		return;
+
+	for (const auto &[code, size] : ranges)
+		mono_gc_register_code_owner ((gpointer) code, size, owner);
+}
 
 /// What this engine keeps for one method in one domain, hung off that method's
 /// MonoDomainMethod record. The record owns the thunk, the name, the tier and
@@ -345,6 +381,9 @@ MonoBackend::DomainState::retire (MonoDomainMethod &dm)
 	for (MonoJitInfo *jinfo : engine.owned.jinfos)
 		mono_jit_info_table_remove (domain, jinfo);
 
+	for (const auto &[code, size] : engine.owned.code_owner_ranges)
+		mono_gc_unregister_code_owner ((gpointer) code, size);
+
 	/*
 	 * take_thunk () is under the record's own lock, the same one thunk_address ()
 	 * reads under - see its doc comment - so a concurrent thunk_address () always
@@ -354,7 +393,12 @@ MonoBackend::DomainState::retire (MonoDomainMethod &dm)
 	 */
 	callbacks->release (dm.trampoline);
 	callbacks->release (dm.compile_trampoline);
-	dm.take_thunk ().quarantine ();
+
+	Thunk thunk = dm.take_thunk ();
+
+	thunk.quarantine ();
+	if (engine.owned.reclaimable_thunk)
+		thunk.release (&code);
 
 	if (!engine.owned.dylibs.empty ())
 		must (jit->remove_dylibs (engine.owned.dylibs));
@@ -411,7 +455,9 @@ MonoBackend::attach_entry (DomainState &domain, MonoDomainMethod &dm)
 {
 	MonoMethod *method = dm.method;
 	auto engine = std::make_unique<MethodState> ();
+	Owned &owned = engine->owned;
 
+	owned.reclaimable_thunk = code_is_reclaimable (method);
 	dm.engine_data = {engine.release (),
 	                  [] (void *data) { delete static_cast<MethodState *> (data); }};
 
@@ -444,7 +490,8 @@ MonoBackend::attach_entry (DomainState &domain, MonoDomainMethod &dm)
 		return trampoline.takeError ();
 	}
 
-	llvm::Expected<Thunk> thunk = Thunk::allocate (&domain.code, domain.thunks, &dm);
+	llvm::Expected<Thunk> thunk = Thunk::allocate (&domain.code, domain.thunks, &dm,
+	                                               owned.reclaimable_thunk);
 
 	if (!thunk) {
 		domain.callbacks->release (*trampoline);
@@ -455,6 +502,16 @@ MonoBackend::attach_entry (DomainState &domain, MonoDomainMethod &dm)
 	thunk->redirect (*trampoline);
 	dm.thunk = *thunk;
 	dm.trampoline = *trampoline;
+
+	/*
+	 * A thread in the compile behind a trampoline has the trampoline's address on
+	 * its stack, and can have nothing else that leads to the method.
+	 */
+	if (mono_jit_code_owner_handle (method) != nullptr)
+		for (void *entry : { *trampoline, *compiling })
+			owned.code_owner_ranges.emplace_back ((const uint8_t *) entry,
+			                                      arch::LazyEntryABI::TrampolineSize);
+	register_code_owner (method, owned.code_owner_ranges);
 
 	dm.jinfo = thunk->register_jinfo(dm.name, domain.domain, method);
 
@@ -676,13 +733,8 @@ MonoBackend::attach_interop (MonoDomainMethod &dm)
 
 	MethodState &engine = engine_state (dm);
 	auto note = [&] (const CompiledMethod &compiled, MonoJitInfo *jinfo) {
-		MONO_LOCK (self->mutex_)
-		{
-			if (compiled.dylib != nullptr)
-				engine.owned.dylibs.push_back (compiled.dylib);
-			if (jinfo != nullptr)
-				engine.owned.jinfos.push_back (jinfo);
-		}
+		register_code_owner (method, compiled.linker_stubs);
+		MONO_LOCK (self->mutex_) { engine.owned.add (method, compiled, jinfo); }
 	};
 
 	/*
@@ -852,13 +904,8 @@ MonoBackend::dispatcher (DomainState &domain, MonoDomainMethod &dm)
 		if (!dm.method->dynamic)
 			return;
 
-		MONO_LOCK (mutex_)
-		{
-			if (compiled.dylib != nullptr)
-				engine.owned.dylibs.push_back (compiled.dylib);
-			if (jinfo != nullptr)
-				engine.owned.jinfos.push_back (jinfo);
-		}
+		register_code_owner (dm.method, compiled.linker_stubs);
+		MONO_LOCK (mutex_) { engine.owned.add (dm.method, compiled, jinfo); }
 	};
 
 	llvm::Expected<void *> built = build_dispatcher (*domain.jit, domain.domain, dm.method, note);
@@ -1405,13 +1452,8 @@ MonoBackend::compile_bodies (DomainState &domain, llvm::ArrayRef<MonoDomainMetho
 			if (!dm->method->dynamic)
 				return;
 
-			MONO_LOCK (mutex_)
-			{
-				if (compiled.dylib != nullptr)
-					engine.owned.dylibs.push_back (compiled.dylib);
-				if (jinfo != nullptr)
-					engine.owned.jinfos.push_back (jinfo);
-			}
+			register_code_owner (dm->method, compiled.linker_stubs);
+			MONO_LOCK (mutex_) { engine.owned.add (dm->method, compiled, jinfo); }
 		};
 
 		Member *held = member.get ();
@@ -1578,6 +1620,20 @@ MonoBackend::request_promotion (MonoMethod *method, MonoDomain *domain, MonoTier
 
 	if (!allow_batched_compile (method, tier))
 		return owner->queue.enqueue (method, [self, owner, method, tier] () {
+			/*
+			 * The compile names the methods this one calls, and a dynamic
+			 * method's callees can die with it. Held on this thread's stack,
+			 * which the collector scans.
+			 */
+			MonoGCHandle code_owner = mono_jit_code_owner_handle (method);
+			MonoObject *volatile held = nullptr;
+
+			if (code_owner != nullptr) {
+				held = mono_gchandle_get_target_internal (code_owner);
+				if (held == nullptr)
+					return;
+			}
+
 			llvm::Expected<MonoDomainMethod *> published =
 				publish (*owner, method);
 
@@ -1596,6 +1652,9 @@ MonoBackend::request_promotion (MonoMethod *method, MonoDomain *domain, MonoTier
 					llvm::logAllUnhandledErrors (
 						body.takeError (), llvm::errs (),
 						"mono: could not promote a method: ");
+
+			/* Read, so that the slot is live until here. */
+			(void) held;
 		});
 
 	/*
@@ -1982,7 +2041,7 @@ MonoBackend::published_entry (MonoDomainMethod &dm)
 
 	ERROR_DECL (metadata_error);
 	MonoMethod *wrapper = mono_marshal_get_managed_wrapper (
-		dm.method, nullptr, (MonoGCHandle) 0, metadata_error);
+		dm.method, nullptr, (MonoGCHandle) 0, (MonoGCHandle) 0, metadata_error);
 
 	if (wrapper == nullptr)
 		return runtime_error (metadata_error);
