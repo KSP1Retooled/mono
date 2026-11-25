@@ -28,6 +28,10 @@
 
 extern GCStats mono_gc_stats;
 
+// Defines the MONO_ARCH_* macros the configuration block reports.
+#ifdef TARGET_AMD64
+#include <mono/mini/mini-runtime.h>
+#endif
 #include <mono/utils/mono-threads-debug.h>
 #include <mono/utils/mono-merp.h>
 
@@ -894,12 +898,10 @@ mono_native_state_add_version (MonoStateWriter *writer)
 	assert_has_space (writer);
 	mono_state_writer_indent (writer);
 	mono_state_writer_object_key (writer, "llvm_support");
-#ifdef MONO_ARCH_LLVM_SUPPORTED
-#ifdef ENABLE_LLVM
+#if defined(MONO_ARCH_LLVM_SUPPORTED) && defined(ENABLE_LLVM)
 	mono_state_writer_printf(writer, "\"%d\",\n", LLVM_API_VERSION);
 #else
 	mono_state_writer_printf(writer, "\"disabled\",\n");
-#endif
 #endif
 
 	const char *susp_policy = mono_threads_suspend_policy_name (mono_threads_suspend_policy ());
