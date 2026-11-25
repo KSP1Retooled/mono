@@ -557,6 +557,7 @@ set(MONO_TESTS_CS_SRC
   dynamic-method-churn.cs
   dynamic-method-code-root.cs
   dynamic-method-delegate.cs
+  dynamic-method-ftnptr.cs
   dynamic-method-gc-in-body.cs
   dynamic-method-gc-in-frame.cs
   dynamic-method-info-root.cs

@@ -399,9 +399,6 @@ delegate_hash_table_remove (MonoDelegate *d)
 {
 	MonoGCHandle gchandle = NULL;
 
-	if (!d->target)
-		return;
-
 	mono_marshal_lock ();
 	if (delegate_hash_table == NULL)
 		delegate_hash_table = delegate_hash_table_new ();
@@ -419,10 +416,9 @@ delegate_hash_table_add (MonoDelegateHandle d)
 	if (delegate_hash_table == NULL)
 		delegate_hash_table = delegate_hash_table_new ();
 	gpointer delegate_trampoline = MONO_HANDLE_GETVAL (d, delegate_trampoline);
-	gboolean has_target = MONO_HANDLE_GETVAL (d, target) != NULL;
-	if (has_target) {
-		// If the delegate has an instance method there is 1 to 1 mapping between
-		// the delegate object and the delegate_trampoline
+	if (MONO_HANDLE_GETVAL (d, target) || MONO_HANDLE_GETVAL (d, method)->wrapper_type == MONO_WRAPPER_DYNAMIC_METHOD) {
+		// If the delegate has an instance method or a dynamic method there is 1 to 1
+		// mapping between the delegate object and the delegate_trampoline
 		MonoGCHandle gchandle = (MonoGCHandle)g_hash_table_lookup (delegate_hash_table, delegate_trampoline);
 		if (gchandle) {
 			// Somehow, some other thread beat us to it ?
@@ -559,27 +555,32 @@ void
 mono_delegate_free_ftnptr (MonoDelegate *delegate)
 {
 	MonoJitInfo *ji;
-	void *ptr;
+	MonoMethod *method = NULL;
+	void *ptr = delegate->delegate_trampoline;
+
+	if (ptr) {
+		ji = mono_jit_info_table_find (mono_domain_get (), mono_get_addr_from_ftnptr (ptr));
+		if (ji)
+			method = mono_jit_info_get_method (ji);
+	}
+
+	if (!delegate->target && !(method && method->dynamic)) {
+		/* The wrapper method is shared between delegates -> no need to free it */
+		mono_atomic_xchg_ptr (&delegate->delegate_trampoline, NULL);
+		return;
+	}
 
 	delegate_hash_table_remove (delegate);
 
 	ptr = (gpointer)mono_atomic_xchg_ptr (&delegate->delegate_trampoline, NULL);
 
-	if (!delegate->target) {
-		/* The wrapper method is shared between delegates -> no need to free it */
-		return;
-	}
-
 	if (ptr) {
 		MonoGCHandle gchandle;
 		void **method_data;
-		MonoMethod *method;
 
-		ji = mono_jit_info_table_find (mono_domain_get (), mono_get_addr_from_ftnptr (ptr));
-		if (!ji)
+		if (!method)
 			return;
 
-		method = mono_jit_info_get_method (ji);
 		method_data = (void **)((MonoMethodWrapper*)method)->method_data;
 
 		/*the target gchandle is the first entry after size and the wrapper itself.*/
@@ -4032,7 +4033,8 @@ method_signature_is_blittable (MonoMethodSignature *sig)
 /**
  * mono_marshal_get_managed_wrapper:
  * Generates IL code to call managed methods from unmanaged code 
- * If \p target_handle is \c 0, the wrapper info will be a \c WrapperInfo structure.
+ * If \p target_handle is \c 0 and \p method is not a dynamic method, the wrapper info will be a
+ * \c WrapperInfo structure. Otherwise the caller owns the wrapper, and it is freed as a dynamic method.
  *
  * If \p delegate_klass is \c NULL, we're creating a wrapper for a function pointer to a method marked with
  * UnamangedCallersOnlyAttribute.
@@ -4048,9 +4050,13 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 	GHashTable *cache;
 	int i;
 	EmitMarshalContext m;
+	gboolean owned;
 
 	g_assert (method != NULL);
 	error_init (error);
+
+	/* A shared wrapper would keep a dynamic method's code for the life of its image. */
+	owned = target_handle || method->wrapper_type == MONO_WRAPPER_DYNAMIC_METHOD;
 
 	if (method->flags & METHOD_ATTRIBUTE_PINVOKE_IMPL) {
 		mono_error_set_invalid_program (error, "Failed because method (%s) marked PInvokeCallback (managed method) and extern (unmanaged) simultaneously.", mono_method_full_name (method, TRUE));
@@ -4064,7 +4070,7 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 	 */
 	cache = get_cache (&mono_method_get_wrapper_cache (method)->managed_wrapper_cache, mono_aligned_addr_hash, NULL);
 
-	if (!target_handle && (res = mono_marshal_find_in_cache (cache, method)))
+	if (!owned && (res = mono_marshal_find_in_cache (cache, method)))
 		return res;
 
 	if (G_UNLIKELY (!delegate_klass)) {
@@ -4110,7 +4116,7 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 	mono_mb_add_data (mb, target_handle);
 
 	/* we copy the signature, so that we can modify it */
-	if (target_handle)
+	if (owned)
 		/* Need to free this later */
 		csig = mono_metadata_signature_dup (invoke_sig);
 	else
@@ -4209,7 +4215,7 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 		return NULL;
 	}
 
-	if (!target_handle) {
+	if (!owned) {
 		WrapperInfo *info;
 
 		// FIXME: Associate it with the method+delegate_klass pair
