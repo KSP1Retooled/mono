@@ -596,7 +596,9 @@ method_object_construct (MonoDomain *domain, MonoClass *refclass, MonoMethod *me
 
 	error_init (error);
 
-	if (*method->name == '.' && (strcmp (method->name, ".ctor") == 0 || strcmp (method->name, ".cctor") == 0)) {
+	/* A dynamic method is a method whatever the program named it. */
+	if (*method->name == '.' && !mono_method_get_code_owner_handle (method)
+	    && (strcmp (method->name, ".ctor") == 0 || strcmp (method->name, ".cctor") == 0)) {
 		klass = mono_class_get_mono_cmethod_class ();
 	}
 	else {
@@ -619,6 +621,53 @@ fail:
 }
 
 /*
+ * The reflection cache is a root, and the object made here holds the owner of the
+ * method's code. So the method itself keeps the one object there is, and weakly.
+ */
+static MonoReflectionMethodHandle
+dynamic_method_get_object (MonoDomain *domain, MonoDynamicMethod *method, MonoError *error)
+{
+	MonoMethod *base = (MonoMethod *)method;
+	MonoReflectionMethodHandle ret = MONO_HANDLE_NEW (MonoReflectionMethod, NULL);
+	MonoObjectHandle owner = mono_gchandle_get_target_handle (method->owner);
+	gboolean reachable = !MONO_HANDLE_IS_NULL (owner) && MONO_HANDLE_DOMAIN (owner) == domain;
+
+	error_init (error);
+
+	if (reachable) {
+		mono_domain_lock (domain);
+		if (method->info)
+			MONO_HANDLE_ASSIGN (ret, MONO_HANDLE_CAST (MonoReflectionMethod, mono_gchandle_get_target_handle (method->info)));
+		mono_domain_unlock (domain);
+
+		if (!MONO_HANDLE_IS_NULL (ret))
+			return ret;
+	}
+
+	MonoReflectionMethodHandle made = method_object_construct (domain, base->klass, base, NULL, error);
+	return_val_if_nok (error, MONO_HANDLE_CAST (MonoReflectionMethod, NULL_HANDLE));
+
+	if (!reachable)
+		return made;
+
+	g_assert (m_class_get_instance_size (mono_handle_class (made)) >= sizeof (MonoReflectionDynamicMethodInfo));
+	MONO_HANDLE_SET (MONO_HANDLE_CAST (MonoReflectionDynamicMethodInfo, made), code_owner, owner);
+
+	mono_domain_lock (domain);
+	if (method->info)
+		MONO_HANDLE_ASSIGN (ret, MONO_HANDLE_CAST (MonoReflectionMethod, mono_gchandle_get_target_handle (method->info)));
+	if (MONO_HANDLE_IS_NULL (ret)) {
+		if (method->info)
+			mono_gchandle_free_internal (method->info);
+		method->info = mono_gchandle_new_weakref_from_handle (MONO_HANDLE_CAST (MonoObject, made));
+		MONO_HANDLE_ASSIGN (ret, made);
+	}
+	mono_domain_unlock (domain);
+
+	return ret;
+}
+
+/*
  * mono_method_get_object_handle:
  * @domain: an app domain
  * @method: a method
@@ -632,6 +681,9 @@ MonoReflectionMethodHandle
 mono_method_get_object_handle (MonoDomain *domain, MonoMethod *method, MonoClass *refclass, MonoError *error)
 {
 	error_init (error);
+	if (mono_method_get_code_owner_handle (method))
+		return dynamic_method_get_object (domain, (MonoDynamicMethod *)method, error);
+
 	if (!refclass)
 		refclass = method->klass;
 
@@ -1126,6 +1178,10 @@ mono_param_get_objects_internal (MonoDomain *domain, MonoMethod *method, MonoCla
 
 		return res;
 	}
+
+	/* Each parameter holds its method's object, which the cache must not hold. */
+	if (mono_method_get_code_owner_handle (method))
+		return param_objects_construct (domain, refclass ? refclass : method->klass, &method->signature, method, error);
 
 	/* Note: the cache is based on the address of the signature into the method
 	 * since we already cache MethodInfos with the method as keys.

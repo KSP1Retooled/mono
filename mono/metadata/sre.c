@@ -4139,12 +4139,15 @@ free_dynamic_method (void *dynamic_method)
 	MonoDomain *domain = data->domain;
 	MonoMethod *method = data->handle;
 	MonoGCHandle owner = mono_method_get_code_owner_handle (method);
+	MonoGCHandle info = ((MonoDynamicMethod *)method)->info;
 
 	g_assert (owner);
 
 	mono_runtime_free_method (domain, method);
 	/* The collector can resolve the handle until the method's code is unregistered. */
 	mono_gchandle_free_internal (owner);
+	if (info)
+		mono_gchandle_free_internal (info);
 	g_free (data);
 }
 

@@ -297,7 +297,7 @@ namespace System.Reflection.Emit {
 			try {
 				CreateDynMethod ();
 				if (method == null)
-					method = new RuntimeMethodInfo (mhandle);
+					method = (RuntimeMethodInfo) RuntimeMethodInfo.GetMethodFromHandleNoGenericCheck (mhandle);
 
 				return method.Invoke (obj, invokeAttr, binder, parameters, culture);
 			}

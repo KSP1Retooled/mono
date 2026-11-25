@@ -1003,6 +1003,15 @@ struct _MonoReflectionMethod {
 /* Safely access System.Reflection.MonoMethod from native code */
 TYPED_HANDLE_DECL (MonoReflectionMethod);
 
+/* System.Reflection.RuntimeMethodInfo */
+typedef struct {
+	MonoReflectionMethod method;
+	/* NULL unless the method is a dynamic method. */
+	MonoObject *code_owner;
+} MonoReflectionDynamicMethodInfo;
+
+TYPED_HANDLE_DECL (MonoReflectionDynamicMethodInfo);
+
 struct _MonoDelegate {
 	MonoObject object;
 	/* The compiled code of the target method */
