@@ -79,7 +79,7 @@ mono_add_unit_test(test-mono-runtime RUNTIME SOURCES
   test-unity-pinned-alloc.cpp test-unity-liveness.cpp test-unity-gc.cpp
   test-type-init-recursion.cpp test-tier.cpp test-eh-ranges.cpp
   test-etw-profiler.cpp test-il-analyzer.cpp test-windows-unwind-table.cpp
-  test-race-entry.cpp)
+  test-race-entry.cpp test-sgen-gchandle.cpp)
 mono_unit_test_cases(test-mono-runtime test-mono-callspec "Callspec.*")
 mono_unit_test_cases(test-mono-runtime test-mono-string   "MonoStringTest.*")
 mono_unit_test_cases(test-mono-runtime test-path          "MonoPath.*")
@@ -122,6 +122,7 @@ mono_unit_test_cases(test-mono-runtime test-il-analyzer   "ILAnalyzer.*")
 mono_unit_test_cases(test-mono-runtime test-windows-unwind-table
                      "WindowsUnwindTable.*")
 mono_unit_test_cases(test-mono-runtime test-race-entry  "RaceEntry.*")
+mono_unit_test_cases(test-mono-runtime test-sgen-gchandle "SgenGCHandle.*")
 
 # One case each, and there cannot be a second. The samples they are built out
 # of run a domain to completion and call mono_jit_cleanup. Nothing in the

@@ -91,8 +91,7 @@ void mono_gchandle_set_target (MonoGCHandle gchandle, MonoObject *obj);
 /*
  * The public GC handle API (mono_gchandle_new and friends) hands embedders a
  * uint32_t, which predates handles being pointer sized. These convert between the
- * two, and how is up to the collector: sgen handles are small integers that survive
- * the trip on their own, boehm handles are real pointers and need encoding.
+ * two, and how is up to the collector.
  * mono_gchandle_from_u32 returns NULL for anything that isn't a live handle.
  */
 guint32      mono_gchandle_to_u32 (MonoGCHandle gchandle);

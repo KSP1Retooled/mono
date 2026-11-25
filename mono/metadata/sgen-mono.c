@@ -2833,24 +2833,6 @@ sgen_client_metadata_for_object (GCObject *obj)
 	return mono_object_domain (obj);
 }
 
-#define MONO_GC_HANDLE_TO_UINT(ptr) ((guint32)((size_t)(ptr) >> 1))
-#if defined(ENABLE_NETCORE)
-/*
- * The lowest bit is used to mark pinned handles by netcore's GCHandle class. These macros
- * are used to convert between the old int32 representation to a netcore compatible pointer
- * representation.
- */
-#define MONO_GC_HANDLE_FROM_UINT(i) ((MonoGCHandle)((size_t)(i) << 1))
-#else
-/*
- * The lowest bit is used to mark weak handles for Boehm. What this really does is force
- * target access via icall instead of just dereferencing a pointer in managed code. Since
- * the classlibs are GC agnostic and can run with either Boehm or SGen, mark all handles
- * on SGen with lowest bit set to avoid the fast path in the classlibs.
- */
-#define MONO_GC_HANDLE_FROM_UINT(i) ((MonoGCHandle)(((size_t)(i) << 1) | 1))
-#endif
-
 /**
  * mono_gchandle_new_internal:
  * \param obj managed object to get a handle for
@@ -2869,7 +2851,7 @@ sgen_client_metadata_for_object (GCObject *obj)
 MonoGCHandle
 mono_gchandle_new_internal (MonoObject *obj, gboolean pinned)
 {
-	return MONO_GC_HANDLE_FROM_UINT (sgen_gchandle_new (obj, pinned));
+	return sgen_gchandle_new (obj, pinned);
 }
 
 /**
@@ -2896,7 +2878,7 @@ mono_gchandle_new_internal (MonoObject *obj, gboolean pinned)
 MonoGCHandle
 mono_gchandle_new_weakref_internal (GCObject *obj, gboolean track_resurrection)
 {
-	return MONO_GC_HANDLE_FROM_UINT (sgen_gchandle_new_weakref (obj, track_resurrection));
+	return sgen_gchandle_new_weakref (obj, track_resurrection);
 }
 
 /**
@@ -2908,7 +2890,7 @@ mono_gchandle_new_weakref_internal (GCObject *obj, gboolean track_resurrection)
 gboolean
 mono_gchandle_is_in_domain_internal (MonoGCHandle gchandle, MonoDomain *domain)
 {
-	MonoDomain *gchandle_domain = (MonoDomain *)sgen_gchandle_get_metadata (MONO_GC_HANDLE_TO_UINT (gchandle));
+	MonoDomain *gchandle_domain = (MonoDomain *)sgen_gchandle_get_metadata (gchandle);
 
 	/* sgen_gchandle_get_metadata () returns NULL for a handle that names no
 	 * live slot. */
@@ -2927,7 +2909,7 @@ mono_gchandle_is_in_domain_internal_unsafe (MonoGCHandle gchandle, MonoDomain* d
 GCHandleType
 mono_gchandle_get_type_internal (MonoGCHandle gchandle)
 {
-	return MONO_GC_HANDLE_TYPE (MONO_GC_HANDLE_TO_UINT (gchandle));
+	return sgen_gchandle_get_type (gchandle);
 }
 
 /**
@@ -2941,21 +2923,19 @@ mono_gchandle_get_type_internal (MonoGCHandle gchandle)
 void
 mono_gchandle_free_internal (MonoGCHandle gchandle)
 {
-	sgen_gchandle_free (MONO_GC_HANDLE_TO_UINT (gchandle));
+	sgen_gchandle_free (gchandle);
 }
 
-/* An sgen handle is a slot and a type packed into a small integer, so it already
- * fits in the 32 bits the public API deals in. */
 guint32
 mono_gchandle_to_u32 (MonoGCHandle gchandle)
 {
-	return (guint32)(size_t)gchandle;
+	return sgen_gchandle_to_u32 (gchandle);
 }
 
 MonoGCHandle
 mono_gchandle_from_u32 (guint32 gchandle)
 {
-	return (MonoGCHandle)(size_t)gchandle;
+	return sgen_gchandle_from_u32 (gchandle);
 }
 
 /**
@@ -2983,7 +2963,7 @@ mono_gchandle_free_domain (MonoDomain *unloading)
 MonoObject*
 mono_gchandle_get_target_internal (MonoGCHandle gchandle)
 {
-	return sgen_gchandle_get_target (MONO_GC_HANDLE_TO_UINT (gchandle));
+	return sgen_gchandle_get_target (gchandle);
 }
 
 static gpointer
@@ -3014,7 +2994,7 @@ sgen_null_links_for_domain (MonoDomain *domain)
 void
 mono_gchandle_set_target (MonoGCHandle gchandle, MonoObject *obj)
 {
-	sgen_gchandle_set_target (MONO_GC_HANDLE_TO_UINT (gchandle), obj);
+	sgen_gchandle_set_target (gchandle, obj);
 }
 
 void

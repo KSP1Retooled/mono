@@ -68,6 +68,71 @@ public class Tests
 		return Test2.fail ? 1 : 0;
 	}
 
+	const int HandleCount = 2000;
+
+	static void fill_targets (GCHandle[] handles, int bias) {
+		for (int i = 0; i < handles.Length; ++i)
+			handles [i].Target = new int [] { i + bias };
+	}
+
+	static bool check_targets (GCHandle[] handles, int bias) {
+		for (int i = 0; i < handles.Length; ++i) {
+			var target = (int[]) handles [i].Target;
+			if (target == null || target [0] != i + bias)
+				return false;
+		}
+		return true;
+	}
+
+	public static int test_0_normal_handle_follows_target () {
+		var handles = new GCHandle [HandleCount];
+		for (int i = 0; i < handles.Length; ++i)
+			handles [i] = GCHandle.Alloc (new int [] { i });
+
+		GC.Collect (0);
+		if (!check_targets (handles, 0))
+			return 1;
+
+		/* The setter writes the slot itself, without entering the runtime. */
+		for (int round = 1; round < 20; ++round) {
+			fill_targets (handles, round);
+			GC.Collect (round % 5 == 0 ? GC.MaxGeneration : 0);
+			if (!check_targets (handles, round))
+				return 2;
+		}
+
+		foreach (var h in handles)
+			h.Free ();
+		return 0;
+	}
+
+	public static int test_0_normal_handle_null_target () {
+		var h = GCHandle.Alloc (null);
+		if (!h.IsAllocated || h.Target != null)
+			return 1;
+
+		var other = GCHandle.Alloc (new object ());
+		if ((IntPtr) h == (IntPtr) other)
+			return 2;
+
+		/* The conversion throws if the handle is not in the current domain. */
+		h = GCHandle.FromIntPtr (GCHandle.ToIntPtr (h));
+		h.Target = "target";
+		GC.Collect ();
+		if ((string) h.Target != "target")
+			return 3;
+
+		h.Target = null;
+		GC.Collect ();
+		h = GCHandle.FromIntPtr (GCHandle.ToIntPtr (h));
+		if (h.Target != null)
+			return 4;
+
+		h.Free ();
+		other.Free ();
+		return 0;
+	}
+
 	static GCHandle handle;
 	static IntPtr original_addr;
 	

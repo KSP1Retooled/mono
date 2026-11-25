@@ -39,12 +39,24 @@ static SgenHashTable gchandle_class_hash_table = SGEN_HASH_TABLE_INIT (INTERNAL_
  * object pointer. If the reference is NULL, and 'GC_HANDLE_TYPE_IS_WEAK' is
  * true for 'type', then the pointer is a metadata pointer--this allows us to
  * retrieve the domain ID of an expired weak reference in Mono.
+ *
+ * A strong handle (HANDLE_NORMAL or HANDLE_PINNED) is the address of a slot in
+ * 'targets', which holds the plain object pointer or NULL. Unity and corlib
+ * dereference any handle whose bit 0 is clear, so the slot has no room for tag
+ * bits. The entry at the same index is always a metadata pointer.
+ *
+ * Every other handle is MONO_GC_HANDLE (index, type) shifted left by one with
+ * bit 0 set.
  */
 
 typedef struct {
 	SgenArrayList entries_array;
+	/* Strong types only. Laid out like the buckets of 'entries_array'. */
+	volatile gpointer *volatile targets [SGEN_ARRAY_LIST_BUCKETS];
 	guint8 type;
 } HandleData;
+
+#define HANDLE_TYPE_IS_STRONG(type) ((type) == HANDLE_NORMAL || (type) == HANDLE_PINNED)
 
 static void
 protocol_gchandle_update (int handle_type, gpointer link, gpointer old_value, gpointer new_value)
@@ -99,36 +111,129 @@ try_occupy_slot (volatile gpointer *slot, gpointer obj, int data)
 	return try_set_slot (slot, (GCObject *)obj, NULL, (GCHandleType)data) != NULL;
 }
 
-static void
-bucket_alloc_callback (gpointer *bucket, guint32 new_bucket_size, gboolean alloc)
-{
-	if (alloc)
-		sgen_register_root ((char *)bucket, new_bucket_size, SGEN_DESCRIPTOR_NULL, ROOT_TYPE_PINNED, MONO_ROOT_SOURCE_GC_HANDLE, NULL, "GC Handle Bucket (SGen, Pinned)");
-	else
-		sgen_deregister_root ((char *)bucket);
-}
-
-static void
-bucket_alloc_report_root (gpointer *bucket, guint32 new_bucket_size, gboolean alloc)
-{
-	if (alloc)
-		sgen_client_root_registered ((char *)bucket, new_bucket_size, MONO_ROOT_SOURCE_GC_HANDLE, NULL, "GC Handle Bucket (SGen, Normal)");
-	else
-		sgen_client_root_deregistered ((char *)bucket);
-}
-
 static HandleData gc_handles [] = {
-	{ SGEN_ARRAY_LIST_INIT (NULL, is_slot_set, try_occupy_slot, -1), (HANDLE_WEAK) },
-	{ SGEN_ARRAY_LIST_INIT (NULL, is_slot_set, try_occupy_slot, -1), (HANDLE_WEAK_TRACK) },
-	{ SGEN_ARRAY_LIST_INIT (bucket_alloc_report_root, is_slot_set, try_occupy_slot, -1), (HANDLE_NORMAL) },
-	{ SGEN_ARRAY_LIST_INIT (bucket_alloc_callback, is_slot_set, try_occupy_slot, -1), (HANDLE_PINNED) },
-	{ SGEN_ARRAY_LIST_INIT (NULL, is_slot_set, try_occupy_slot, -1), (HANDLE_WEAK_FIELDS) },
+	{ SGEN_ARRAY_LIST_INIT (NULL, is_slot_set, try_occupy_slot, -1), { NULL }, (HANDLE_WEAK) },
+	{ SGEN_ARRAY_LIST_INIT (NULL, is_slot_set, try_occupy_slot, -1), { NULL }, (HANDLE_WEAK_TRACK) },
+	{ SGEN_ARRAY_LIST_INIT (NULL, is_slot_set, try_occupy_slot, -1), { NULL }, (HANDLE_NORMAL) },
+	{ SGEN_ARRAY_LIST_INIT (NULL, is_slot_set, try_occupy_slot, -1), { NULL }, (HANDLE_PINNED) },
+	{ SGEN_ARRAY_LIST_INIT (NULL, is_slot_set, try_occupy_slot, -1), { NULL }, (HANDLE_WEAK_FIELDS) },
 };
 
 static HandleData *
 gc_handles_for_type (GCHandleType type)
 {
-	return type < HANDLE_TYPE_MAX ? &gc_handles [type] : NULL;
+	/* A handle with no type bits decodes to type -1. */
+	return (guint)type < HANDLE_TYPE_MAX ? &gc_handles [type] : NULL;
+}
+
+static void
+register_target_bucket (HandleData *handles, gpointer *bucket, size_t size)
+{
+	if (handles->type == HANDLE_PINNED)
+		sgen_register_root ((char *)bucket, size, SGEN_DESCRIPTOR_NULL, ROOT_TYPE_PINNED, MONO_ROOT_SOURCE_GC_HANDLE, NULL, "GC Handle Bucket (SGen, Pinned)");
+	else
+		sgen_client_root_registered ((char *)bucket, size, MONO_ROOT_SOURCE_GC_HANDLE, NULL, "GC Handle Bucket (SGen, Normal)");
+}
+
+static void
+deregister_target_bucket (HandleData *handles, gpointer *bucket)
+{
+	if (handles->type == HANDLE_PINNED)
+		sgen_deregister_root ((char *)bucket);
+	else
+		sgen_client_root_deregistered ((char *)bucket);
+}
+
+/* Returns NULL where no handle in the index's bucket has been given a target yet. */
+static volatile gpointer *
+get_target_slot (HandleData *handles, guint32 index)
+{
+	guint32 bucket, offset;
+	volatile gpointer *targets;
+
+	sgen_array_list_bucketize (index, &bucket, &offset);
+	targets = handles->targets [bucket];
+	return targets ? &targets [offset] : NULL;
+}
+
+static volatile gpointer *
+ensure_target_slot (HandleData *handles, guint32 index)
+{
+	guint32 bucket, offset;
+
+	sgen_array_list_bucketize (index, &bucket, &offset);
+	if (!handles->targets [bucket]) {
+		const size_t size = sizeof (gpointer) * sgen_array_list_bucket_size (bucket);
+		gpointer *targets = (gpointer *)g_malloc0 (size);
+
+		register_target_bucket (handles, targets, size);
+		mono_memory_write_barrier ();
+		if (mono_atomic_cas_ptr ((volatile gpointer *)&handles->targets [bucket], targets, NULL) != NULL) {
+			/* Someone beat us to the allocation. */
+			deregister_target_bucket (handles, targets);
+			g_free (targets);
+		}
+	}
+	return &handles->targets [bucket] [offset];
+}
+
+/*
+ * The handle's table and index, or NULL where the value is not a handle. The value
+ * comes from managed code unchecked, so this must not dereference it.
+ */
+static HandleData *
+resolve_handle (gpointer gchandle, guint32 *index)
+{
+	const size_t value = (size_t)gchandle;
+	HandleData *handles;
+	int type;
+
+	if (value & 1) {
+		const guint32 packed = (guint32)(value >> 1);
+
+		handles = gc_handles_for_type (MONO_GC_HANDLE_TYPE (packed));
+		if (!handles || HANDLE_TYPE_IS_STRONG (handles->type))
+			return NULL;
+		*index = MONO_GC_HANDLE_SLOT (packed);
+		return handles;
+	}
+
+	for (type = HANDLE_NORMAL; type <= HANDLE_PINNED; ++type) {
+		guint32 bucket;
+
+		handles = gc_handles_for_type ((GCHandleType)type);
+		/* Each bucket is twice the one before it, so the last holds most handles. */
+		for (bucket = sgen_array_list_index_bucket (handles->entries_array.capacity); bucket-- > 0;) {
+			const size_t base = (size_t)handles->targets [bucket];
+			const guint32 bucket_size = sgen_array_list_bucket_size (bucket);
+			const size_t offset = value - base;
+
+			if (!base || value < base || offset >= bucket_size * sizeof (gpointer))
+				continue;
+			if (offset % sizeof (gpointer))
+				return NULL;
+			*index = (guint32)(offset / sizeof (gpointer)) + bucket_size - SGEN_ARRAY_LIST_MIN_BUCKET_SIZE;
+			return handles;
+		}
+	}
+
+	return NULL;
+}
+
+/* The tagged pointer of any type of handle. 'slot' is the entry at 'index'. */
+static gpointer
+read_entry (HandleData *handles, volatile gpointer *slot, guint32 index)
+{
+	gpointer entry = *slot;
+	volatile gpointer *target;
+	gpointer obj;
+
+	if (!HANDLE_TYPE_IS_STRONG (handles->type) || !MONO_GC_HANDLE_OCCUPIED (entry))
+		return entry;
+
+	target = get_target_slot (handles, index);
+	obj = target ? *target : NULL;
+	return obj ? MONO_GC_HANDLE_OBJECT_POINTER (obj, FALSE) : entry;
 }
 
 /* This assumes that the world is stopped. */
@@ -138,16 +243,13 @@ sgen_mark_normal_gc_handles (void *addr, SgenUserMarkFunc mark_func, void *gc_da
 	HandleData *handles = gc_handles_for_type (HANDLE_NORMAL);
 	SgenArrayList *array = &handles->entries_array;
 	volatile gpointer *slot;
-	gpointer hidden, revealed;
 
 	SGEN_ARRAY_LIST_FOREACH_SLOT (array, slot) {
-		hidden = *slot;
-		revealed = MONO_GC_REVEAL_POINTER (hidden, FALSE);
-		if (!MONO_GC_HANDLE_IS_OBJECT_POINTER (hidden))
+		volatile gpointer *target = is_slot_set (slot) ? get_target_slot (handles, __index) : NULL;
+		if (!target || !*target)
 			continue;
-		mark_func ((MonoObject **)&revealed, gc_data);
-		g_assert (revealed);
-		*slot = MONO_GC_HANDLE_OBJECT_POINTER (revealed, FALSE);
+		mark_func ((GCObject **)target, gc_data);
+		g_assert (*target);
 	} SGEN_ARRAY_LIST_END_FOREACH_SLOT;
 }
 
@@ -170,7 +272,7 @@ sgen_dbg_find_gchandles_holding (gpointer value)
 		volatile gpointer *slot;
 
 		SGEN_ARRAY_LIST_FOREACH_SLOT (array, slot) {
-			gpointer hidden = *slot;
+			gpointer hidden = read_entry (handles, slot, __index);
 			gpointer revealed;
 
 			if (!MONO_GC_HANDLE_IS_OBJECT_POINTER (hidden))
@@ -195,21 +297,28 @@ sgen_gc_handles_report_roots (SgenUserReportRootFunc report_func, void *gc_data)
 	HandleData *handles = gc_handles_for_type (HANDLE_NORMAL);
 	SgenArrayList *array = &handles->entries_array;
 	volatile gpointer *slot;
-	gpointer hidden, revealed;
 
 	SGEN_ARRAY_LIST_FOREACH_SLOT (array, slot) {
-		hidden = *slot;
-		revealed = MONO_GC_REVEAL_POINTER (hidden, FALSE);
+		volatile gpointer *target = is_slot_set (slot) ? get_target_slot (handles, __index) : NULL;
 
-		if (MONO_GC_HANDLE_IS_OBJECT_POINTER (hidden))
-			report_func ((void*)slot, (GCObject*)revealed, gc_data);
+		if (target && *target)
+			report_func ((void*)target, (GCObject*)*target, gc_data);
 	} SGEN_ARRAY_LIST_END_FOREACH_SLOT;
 }
 
-static guint32
+static gpointer
+make_handle (HandleData *handles, guint32 index)
+{
+	if (HANDLE_TYPE_IS_STRONG (handles->type))
+		return (gpointer)get_target_slot (handles, index);
+	return (gpointer)(((size_t)MONO_GC_HANDLE (index, handles->type) << 1) | 1);
+}
+
+static gpointer
 alloc_handle (HandleData *handles, GCObject *obj, gboolean track)
 {
-	guint32 res, index;
+	const gboolean is_strong = HANDLE_TYPE_IS_STRONG (handles->type);
+	guint32 index;
 	SgenArrayList *array = &handles->entries_array;
 
 	/*
@@ -224,7 +333,9 @@ alloc_handle (HandleData *handles, GCObject *obj, gboolean track)
 	 * not a huge deal since `obj` is on the stack and thus pinned anyway,
 	 * but hopefully some day it won't be anymore.
 	 */
-	index = sgen_array_list_add (array, obj, handles->type, TRUE);
+	index = sgen_array_list_add (array, is_strong ? NULL : obj, handles->type, TRUE);
+	if (is_strong)
+		*ensure_target_slot (handles, index) = obj;
 #ifdef HEAVY_STATISTICS
 	mono_atomic_inc_i32 ((volatile gint32 *)&stat_gc_handles_allocated);
 	if (stat_gc_handles_allocated > stat_gc_handles_max_allocated)
@@ -232,15 +343,27 @@ alloc_handle (HandleData *handles, GCObject *obj, gboolean track)
 #endif
 	/* Ensure that a GC handle cannot be given to another thread without the slot having been set. */
 	mono_memory_write_barrier ();
-	res = MONO_GC_HANDLE (index, handles->type);
-	sgen_client_gchandle_created ((GCHandleType)handles->type, obj, res);
-	return res;
+	sgen_client_gchandle_created ((GCHandleType)handles->type, obj, MONO_GC_HANDLE (index, handles->type));
+	return make_handle (handles, index);
 }
 
 static gboolean
 object_older_than (GCObject *object, int generation)
 {
 	return generation == GENERATION_NURSERY && !sgen_ptr_in_nursery (object);
+}
+
+static void
+release_strong_handle (HandleData *handles, volatile gpointer *slot, guint32 index)
+{
+	volatile gpointer *target = get_target_slot (handles, index);
+
+	/* Clearing the entry frees the index. Clearing the target after that can
+	 * erase the next owner's. */
+	if (target)
+		*target = NULL;
+	mono_memory_write_barrier ();
+	*slot = NULL;
 }
 
 /*
@@ -260,7 +383,7 @@ sgen_gchandle_iterate (GCHandleType handle_type, int max_generation, SgenGCHandl
 	 * world is stopped, so we shouldn't miss any handles during iteration.
 	 */
 	SGEN_ARRAY_LIST_FOREACH_SLOT (array, slot) {
-		hidden = *slot;
+		hidden = read_entry (handle_data, slot, __index);
 		occupied = (gpointer) MONO_GC_HANDLE_OCCUPIED (hidden);
 		g_assert (hidden ? !!occupied : !occupied);
 		if (!occupied)
@@ -270,6 +393,12 @@ sgen_gchandle_iterate (GCHandleType handle_type, int max_generation, SgenGCHandl
 			SGEN_ASSERT (0, MONO_GC_HANDLE_OCCUPIED (result), "Why did the callback return an unoccupied entry?");
 		else
 			HEAVY_STAT (mono_atomic_dec_i32 ((volatile gint32 *)&stat_gc_handles_allocated));
+		if (HANDLE_TYPE_IS_STRONG (handle_type)) {
+			SGEN_ASSERT (0, !result || result == hidden, "Why did the callback retarget a strong handle?");
+			if (!result)
+				release_strong_handle (handle_data, slot, __index);
+			continue;
+		}
 		protocol_gchandle_update (handle_type, (gpointer)slot, hidden, result);
 		*slot = result;
 	} SGEN_ARRAY_LIST_END_FOREACH_SLOT;
@@ -297,13 +426,13 @@ sgen_gchandle_foreach_strong_target (GFunc callback, gpointer user_data)
 	sgen_gchandle_iterate (HANDLE_PINNED, GENERATION_OLD, visit_strong_target, &visitor);
 }
 
-guint32
+gpointer
 sgen_gchandle_new (GCObject *obj, gboolean pinned)
 {
 	return alloc_handle (gc_handles_for_type (pinned ? HANDLE_PINNED : HANDLE_NORMAL), obj, FALSE);
 }
 
-guint32
+gpointer
 sgen_gchandle_new_weakref (GCObject *obj, gboolean track_resurrection)
 {
 	return alloc_handle (gc_handles_for_type (track_resurrection ? HANDLE_WEAK_TRACK : HANDLE_WEAK), obj, track_resurrection);
@@ -352,35 +481,40 @@ retry:
 }
 
 GCObject*
-sgen_gchandle_get_target (guint32 gchandle)
+sgen_gchandle_get_target (gpointer gchandle)
 {
-	guint index = MONO_GC_HANDLE_SLOT (gchandle);
-	GCHandleType type = MONO_GC_HANDLE_TYPE (gchandle);
-	HandleData *handles = gc_handles_for_type (type);
+	guint32 index;
+	HandleData *handles = resolve_handle (gchandle, &index);
 	/* Invalid handles are possible; accessing one should produce NULL. (#34276) */
 	if (!handles)
 		return NULL;
-	return link_get (sgen_array_list_get_slot (&handles->entries_array, index), MONO_GC_HANDLE_TYPE_IS_WEAK (type));
+	if (HANDLE_TYPE_IS_STRONG (handles->type))
+		return (GCObject *)*get_target_slot (handles, index);
+	return link_get (sgen_array_list_get_slot (&handles->entries_array, index), MONO_GC_HANDLE_TYPE_IS_WEAK (handles->type));
 }
 
 void
-sgen_gchandle_set_target (guint32 gchandle, GCObject *obj)
+sgen_gchandle_set_target (gpointer gchandle, GCObject *obj)
 {
-	guint32 index = MONO_GC_HANDLE_SLOT (gchandle);
-	GCHandleType type = MONO_GC_HANDLE_TYPE (gchandle);
-	HandleData *handles = gc_handles_for_type (type);
+	guint32 index;
+	HandleData *handles = resolve_handle (gchandle, &index);
 	volatile gpointer *slot;
 	gpointer entry;
+	gboolean is_strong;
 
 	if (!handles)
 		return;
 
+	is_strong = HANDLE_TYPE_IS_STRONG (handles->type);
 	slot = sgen_array_list_get_slot (&handles->entries_array, index);
 
 	do {
 		entry = *slot;
 		SGEN_ASSERT (0, MONO_GC_HANDLE_OCCUPIED (entry), "Why are we setting the target on an unoccupied slot?");
-	} while (!try_set_slot (slot, obj, entry, (GCHandleType)handles->type));
+	} while (!try_set_slot (slot, is_strong ? NULL : obj, entry, (GCHandleType)handles->type));
+
+	if (is_strong)
+		*get_target_slot (handles, index) = obj;
 }
 
 static gpointer
@@ -414,11 +548,10 @@ retry:
 }
 
 gpointer
-sgen_gchandle_get_metadata (guint32 gchandle)
+sgen_gchandle_get_metadata (gpointer gchandle)
 {
-	guint32 index = MONO_GC_HANDLE_SLOT (gchandle);
-	GCHandleType type = MONO_GC_HANDLE_TYPE (gchandle);
-	HandleData *handles = gc_handles_for_type (type);
+	guint32 index;
+	HandleData *handles = resolve_handle (gchandle, &index);
 	volatile gpointer *slot;
 
 	if (!handles)
@@ -428,18 +561,50 @@ sgen_gchandle_get_metadata (guint32 gchandle)
 
 	slot = sgen_array_list_get_slot (&handles->entries_array, index);
 
-	return mono_gchandle_slot_metadata (slot, MONO_GC_HANDLE_TYPE_IS_WEAK (type));
+	if (HANDLE_TYPE_IS_STRONG (handles->type)) {
+		GCObject *obj = (GCObject *)*get_target_slot (handles, index);
+		if (obj)
+			return sgen_client_metadata_for_object (obj);
+	}
+
+	return mono_gchandle_slot_metadata (slot, MONO_GC_HANDLE_TYPE_IS_WEAK (handles->type));
+}
+
+GCHandleType
+sgen_gchandle_get_type (gpointer gchandle)
+{
+	guint32 index;
+	HandleData *handles = resolve_handle (gchandle, &index);
+
+	return handles ? (GCHandleType)handles->type : HANDLE_TYPE_MAX;
+}
+
+guint32
+sgen_gchandle_to_u32 (gpointer gchandle)
+{
+	guint32 index;
+	HandleData *handles = resolve_handle (gchandle, &index);
+
+	return handles ? (MONO_GC_HANDLE (index, handles->type) << 1) | 1 : 0;
+}
+
+gpointer
+sgen_gchandle_from_u32 (guint32 gchandle)
+{
+	const guint32 packed = gchandle >> 1;
+	HandleData *handles = gc_handles_for_type (MONO_GC_HANDLE_TYPE (packed));
+	const guint32 index = MONO_GC_HANDLE_SLOT (packed);
+
+	if (!(gchandle & 1) || !handles || index >= handles->entries_array.capacity)
+		return NULL;
+	return make_handle (handles, index);
 }
 
 void
-sgen_gchandle_free (guint32 gchandle)
+sgen_gchandle_free (gpointer gchandle)
 {
-	if (!gchandle)
-		return;
-
-	guint32 index = MONO_GC_HANDLE_SLOT (gchandle);
-	GCHandleType type = MONO_GC_HANDLE_TYPE (gchandle);
-	HandleData *handles = gc_handles_for_type (type);
+	guint32 index;
+	HandleData *handles = resolve_handle (gchandle, &index);
 	volatile gpointer *slot;
 	gpointer entry;
 	if (!handles)
@@ -453,12 +618,16 @@ sgen_gchandle_free (guint32 gchandle)
 		entry = *slot;
 
 		if (MONO_GC_HANDLE_OCCUPIED (entry)) {
-			*slot = NULL;
-			protocol_gchandle_update (handles->type, (gpointer)slot, entry, NULL);
+			if (HANDLE_TYPE_IS_STRONG (handles->type)) {
+				release_strong_handle (handles, slot, index);
+			} else {
+				*slot = NULL;
+				protocol_gchandle_update (handles->type, (gpointer)slot, entry, NULL);
+			}
 			HEAVY_STAT (mono_atomic_dec_i32 ((volatile gint32 *)&stat_gc_handles_allocated));
 		}
 	}
-	sgen_client_gchandle_destroyed ((GCHandleType)handles->type, gchandle);
+	sgen_client_gchandle_destroyed ((GCHandleType)handles->type, MONO_GC_HANDLE (index, handles->type));
 }
 
 /*
@@ -628,7 +797,7 @@ sgen_gchandle_stats_count (void)
 		gpointer hidden, revealed;
 
 		SGEN_ARRAY_LIST_FOREACH_SLOT (array, slot) {
-			hidden = *slot;
+			hidden = read_entry (handles, slot, __index);
 			revealed = MONO_GC_REVEAL_POINTER (hidden, MONO_GC_HANDLE_TYPE_IS_WEAK (i));
 
 			if (MONO_GC_HANDLE_IS_OBJECT_POINTER (hidden))

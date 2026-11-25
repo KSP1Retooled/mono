@@ -6,8 +6,8 @@
 //
 // A boehm handle is a pointer into a HandleData block, so the bytes below are
 // laid out as one. A plausible type and size get past the cheap checks and
-// reach the bitmap read. Sgen packs a slot and a type into one value, where the
-// same address is an index far past the end of the slot array.
+// reach the bitmap read. A strong sgen handle is the address of a slot, and this
+// address is in no bucket of slots.
 using System;
 using System.Runtime.InteropServices;
 
