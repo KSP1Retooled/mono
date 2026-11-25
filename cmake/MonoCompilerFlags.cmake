@@ -135,10 +135,14 @@ else()
     # forbids the repeat.
     $<$<COMPILE_LANGUAGE:C>:-std=gnu11>
     $<$<COMPILE_LANGUAGE:C>:-fno-strict-aliasing>
-    $<$<COMPILE_LANGUAGE:C>:-fwrapv>
-    # The runtime takes the address of TLS variables across shared-library
-    # boundaries. The segment-relative shortcut breaks that under Xen.
-    $<$<COMPILE_LANGUAGE:C>:-mno-tls-direct-seg-refs>)
+    $<$<COMPILE_LANGUAGE:C>:-fwrapv>)
+
+  if(MONO_TARGET_ARCH STREQUAL "amd64")
+    target_compile_options(mono_common INTERFACE
+      # The runtime takes the address of TLS variables across shared-library
+      # boundaries. The segment-relative shortcut breaks that under Xen.
+      $<$<COMPILE_LANGUAGE:C>:-mno-tls-direct-seg-refs>)
+  endif()
 endif()
 
 # MONO_DLL_EXPORT turns the MONO_API attributes into "export" rather than

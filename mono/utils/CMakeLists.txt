@@ -108,10 +108,13 @@ set(monoutils_sources
   parse.c
   checked-build.c
   options.c
-  mono-math-c.c
-  # amd64-specific
-  mach-support-amd64.c
-  mono-hwcap-x86.c)
+  mono-math-c.c)
+
+if(MONO_TARGET_ARCH STREQUAL "arm64")
+  list(APPEND monoutils_sources mach-support-arm64.c mono-hwcap-arm64.c)
+else()
+  list(APPEND monoutils_sources mach-support-amd64.c mono-hwcap-x86.c)
+endif()
 
 mono_add_object_library(monoutils
   SOURCES ${monoutils_sources}

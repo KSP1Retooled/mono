@@ -67,6 +67,11 @@ mono_unit_test_cases(test-mono-utils test-conc-hashtable "ConcHashTable.*")
 mono_add_unit_test(test-mono-linked-list-set SOURCES test-mono-linked-list-set.cpp)
 mono_unit_test_cases(test-mono-linked-list-set test-mono-linked-list-set "*")
 
+if(NOT MONO_HAVE_CODEGEN)
+  # Everything below links mini.
+  return()
+endif()
+
 # The tests that run against a live runtime, which harness.cpp brings up once
 # for the binary. test-path is here without needing one. It reaches
 # mono-path.c's statics by including the file. Only the archive semantics of

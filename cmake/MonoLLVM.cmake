@@ -26,7 +26,12 @@ endif()
 # 18.x -> 1800, the way build_llvm_config.sh derived it.
 math(EXPR MONO_LLVM_API_VERSION "${LLVM_VERSION_MAJOR} * 100")
 
-set(_llvm_components analysis core bitwriter linker passes orcjit x86codegen x86asmparser)
+if(MONO_TARGET_ARCH STREQUAL "arm64")
+  set(_llvm_target_components aarch64codegen aarch64asmparser)
+else()
+  set(_llvm_target_components x86codegen x86asmparser)
+endif()
+set(_llvm_components analysis core bitwriter linker passes orcjit ${_llvm_target_components})
 
 # Prefer the single libLLVM dylib when the install has one.  A Unity build
 # takes a static LLVM instead, because an allocation inside the dylib binds to

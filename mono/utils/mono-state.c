@@ -28,8 +28,6 @@
 
 extern GCStats mono_gc_stats;
 
-// For AOT mode
-#include <mono/mini/mini-runtime.h>
 #include <mono/utils/mono-threads-debug.h>
 #include <mono/utils/mono-merp.h>
 

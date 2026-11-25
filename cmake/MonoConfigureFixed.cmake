@@ -19,16 +19,10 @@ set(MONO_CORLIB_VERSION "\"${MONO_CORLIB_VERSION_GUID}\"")
 set(STDC_HEADERS 1)
 
 # --- host / target ----------------------------------------------------------
-# This port is amd64-only.  The other architectures configure.ac knew about
-# are not reachable here, so we fail loudly rather than produce a config.h
-# that claims a target we do not generate code for.
-if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
-  message(FATAL_ERROR "Unsupported target ${CMAKE_SYSTEM_PROCESSOR}; this build supports amd64 only")
-endif()
-
-set(HOST_AMD64   1)
-set(TARGET_AMD64 1)
-set(MONO_ARCHITECTURE "\"amd64\"")
+string(TOUPPER "${MONO_TARGET_ARCH}" _mono_arch_upper)
+set(HOST_${_mono_arch_upper}   1)
+set(TARGET_${_mono_arch_upper} 1)
+set(MONO_ARCHITECTURE "\"${MONO_TARGET_ARCH}\"")
 
 # NOTE: configure.ac guarded the HOST_LINUX define with
 #   if test echo x$target_os | grep -q linux; then

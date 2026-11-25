@@ -1,8 +1,7 @@
 # Build options.  These are the CMake spelling of the ./configure switches the
 # tree actually uses.  Everything the old configure.ac supported for platforms
-# outside this port's scope (Darwin, mobile, wasm, cross builds, the netcore
-# profile, AOT-only runtimes) is gone rather than carried along as dead
-# conditionals.
+# outside this port's scope (Darwin, mobile, wasm, the netcore profile, AOT-only
+# runtimes) is gone rather than carried along as dead conditionals.
 
 include(CMakeDependentOption)
 
@@ -20,6 +19,20 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
 else()
   message(FATAL_ERROR
     "Unsupported host ${CMAKE_SYSTEM_NAME}; this build supports Linux and Windows")
+endif()
+
+# Whether mono/mini and mono/llvm have a back end for the target.  Off, the build
+# stops at the layers below them.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  set(MONO_TARGET_ARCH amd64)
+  set(MONO_HAVE_CODEGEN ON)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" AND MONO_HOST_LINUX)
+  set(MONO_TARGET_ARCH arm64)
+  set(MONO_HAVE_CODEGEN OFF)
+else()
+  message(FATAL_ERROR
+    "Unsupported target ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}; "
+    "this build supports amd64, and arm64 on Linux")
 endif()
 
 # --- garbage collectors -----------------------------------------------------
@@ -225,6 +238,19 @@ if(MONO_LLVM_PREFIX)
   set(MONO_ENABLE_LLVM ON)
 else()
   set(MONO_ENABLE_LLVM OFF)
+endif()
+
+# Every one of these needs a runtime that can run a method.  The class libraries
+# are in the list because gensources and resgen run on it.
+if(NOT MONO_HAVE_CODEGEN)
+  set(MONO_ENABLE_LIBRARIES OFF)
+  set(MONO_ENABLE_MCS_BUILD OFF)
+  set(MONO_ENABLE_SAMPLES   OFF)
+  set(MONO_ENABLE_ITTAPI    OFF)
+  set(MONO_ENABLE_BTLS      OFF)
+  message(STATUS
+    "${MONO_TARGET_ARCH} has no code generator: building without the runtime, "
+    "the class libraries and BTLS")
 endif()
 
 if(NOT MONO_ENABLE_SGEN AND NOT MONO_ENABLE_BOEHM)

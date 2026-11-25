@@ -65,6 +65,16 @@ set(DART_TESTING_TIMEOUT "${MONO_CTEST_TIMEOUT}" CACHE STRING
 
 include(CTest)
 
+# A test that names a path rather than a target, and any child a test spawns,
+# runs under qemu through binfmt_misc, and qemu then has only the environment to
+# find the sysroot by.
+if(CMAKE_CROSSCOMPILING AND MONO_CROSS_SYSROOT)
+  file(WRITE "${CMAKE_BINARY_DIR}/cross-test-env.cmake"
+       "set(ENV{QEMU_LD_PREFIX} [==[${MONO_CROSS_SYSROOT}]==])\n")
+  set_property(DIRECTORY APPEND PROPERTY
+               TEST_INCLUDE_FILES "${CMAKE_BINARY_DIR}/cross-test-env.cmake")
+endif()
+
 include(MonoOptions)
 include(MonoCompilerFlags)
 
@@ -390,6 +400,7 @@ message(STATUS "    host/target:   ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR
 message(STATUS "    GC:            ${DEFAULT_GC_NAME}")
 message(STATUS "    suspend:       ${MONO_THREAD_SUSPEND}")
 message(STATUS "    TLS:           ${MONO_WITH_TLS}")
+message(STATUS "    code generator: ${MONO_HAVE_CODEGEN}")
 message(STATUS "    LLVM back end: ${MONO_ENABLE_LLVM} ${MONO_LLVM_PREFIX}")
 message(STATUS "    Mono.Native:   ${MONO_ENABLE_MONO_NATIVE}")
 message(STATUS "    BTLS:          ${MONO_ENABLE_BTLS}")
