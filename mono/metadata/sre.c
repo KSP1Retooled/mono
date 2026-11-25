@@ -4140,9 +4140,15 @@ free_dynamic_method (void *dynamic_method)
 	MonoMethod *method = data->handle;
 	MonoGCHandle owner = mono_method_get_code_owner_handle (method);
 	MonoGCHandle info = ((MonoDynamicMethod *)method)->info;
+	WrapperInfo *invoke_info = NULL;
+	MonoMethod *invoke = mono_marshal_take_dynamic_invoke_wrapper (method, &invoke_info);
 
 	g_assert (owner);
 
+	if (invoke) {
+		mono_runtime_free_method (domain, invoke);
+		g_free (invoke_info);
+	}
 	mono_runtime_free_method (domain, method);
 	/* The collector can resolve the handle until the method's code is unregistered. */
 	mono_gchandle_free_internal (owner);

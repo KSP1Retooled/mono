@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 
 #include <mono/metadata/gc-internals.h>
+#include <mono/metadata/marshal.h>
 
 #include <mono/utils/atomic.h>
 #include <mono/utils/mono-compiler.h>
@@ -714,8 +715,13 @@ jit_info_table_add (MonoDomain *domain, MonoJitInfoTable *volatile *table_ptr, M
 void
 mono_jit_info_register_code_owner (MonoJitInfo *ji, MonoMethod *method)
 {
-	MonoGCHandle owner = mono_method_get_code_owner_handle (method);
+	MonoGCHandle owner;
 
+	/* A dynamic method's own invoke wrapper is freed with the method. */
+	if (method->dynamic && method->wrapper_type == MONO_WRAPPER_RUNTIME_INVOKE)
+		method = mono_marshal_get_wrapper_info (method)->d.runtime_invoke.method;
+
+	owner = mono_method_get_code_owner_handle (method);
 	if (!owner)
 		return;
 

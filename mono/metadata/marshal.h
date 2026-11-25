@@ -540,6 +540,9 @@ mono_marshal_get_gsharedvt_out_wrapper (void);
 void
 mono_marshal_free_dynamic_wrappers (MonoMethod *method);
 
+MonoMethod *
+mono_marshal_take_dynamic_invoke_wrapper (MonoMethod *method, WrapperInfo **info);
+
 void
 mono_marshal_lock_internal (void);
 

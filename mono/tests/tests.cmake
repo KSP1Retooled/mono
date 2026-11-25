@@ -560,6 +560,7 @@ set(MONO_TESTS_CS_SRC
   dynamic-method-gc-in-body.cs
   dynamic-method-gc-in-frame.cs
   dynamic-method-info-root.cs
+  dynamic-method-invoke.cs
   verbose.cs
   generic-unmanaged-constraint.cs
   bug-10834.cs
