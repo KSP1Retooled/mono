@@ -26,6 +26,7 @@
 #include "metadata/mono-gc.h"
 #include "metadata/runtime.h"
 #include "metadata/sgen-bridge-internals.h"
+#include "metadata/sgen-code-owners.h"
 #include "metadata/sgen-mono.h"
 #include "metadata/sgen-mono-ilgen.h"
 #include "metadata/gc-internals.h"
@@ -2361,6 +2362,68 @@ pin_handle_stack_interior_ptrs (void **ptr_slot, void *user_data)
 extern gboolean mono_wasm_enable_gc;
 #endif
 
+void
+mono_gc_register_code_owner (gpointer code, gsize size, MonoGCHandle owner)
+{
+	LOCK_GC;
+	sgen_code_owners_add ((gsize)code, size, owner);
+	UNLOCK_GC;
+}
+
+void
+mono_gc_unregister_code_owner (gpointer code, gsize size)
+{
+	LOCK_GC;
+	sgen_code_owners_remove ((gsize)code, size);
+	UNLOCK_GC;
+}
+
+static inline void
+pin_stack_reference (void **slot, mword addr, void *start_nursery, void *end_nursery)
+{
+	if (addr < (mword)start_nursery || addr >= (mword)end_nursery)
+		return;
+
+	sgen_pin_stage_ptr ((void*)addr);
+	sgen_binary_protocol_pin_stage (slot, (void*)addr);
+	sgen_pin_stats_register_address ((char*)addr, PIN_TYPE_STACK);
+}
+
+static MONO_NEVER_INLINE void
+pin_code_owners (void **slot, mword addr, void *start_nursery, void *end_nursery)
+{
+	MonoGCHandle owners [SGEN_CODE_OWNERS_MAX];
+	int count = sgen_code_owners_find (addr, owners);
+	int i;
+
+	for (i = 0; i < count; ++i)
+		pin_stack_reference (slot, (mword)mono_gchandle_get_target_internal (owners [i]), start_nursery, end_nursery);
+}
+
+/*
+ * Pins what the words between START and END refer to, as an object or as code that an
+ * object owns.
+ */
+MONO_NO_SANITIZE_ADDRESS
+static void
+pin_from_thread_memory (void *start, void *end, void *start_nursery, void *end_nursery)
+{
+	void **slot;
+
+	if (sgen_code_owners_empty ()) {
+		sgen_conservatively_pin_objects_from ((void **)start, (void **)end, start_nursery, end_nursery, PIN_TYPE_STACK);
+		return;
+	}
+
+	for (slot = (void **)start; slot < (void **)end; ++slot) {
+		mword addr = (mword)*slot;
+
+		pin_stack_reference (slot, addr & ~(mword)(SGEN_ALLOC_ALIGN - 1), start_nursery, end_nursery);
+		if (G_UNLIKELY (sgen_code_owner_possible (addr)))
+			pin_code_owners (slot, addr, start_nursery, end_nursery);
+	}
+}
+
 /*
  * Mark from thread stacks and registers.
  */
@@ -2424,12 +2487,11 @@ sgen_client_scan_thread_data (void *start_nursery, void *end_nursery, gboolean p
 					conservative_stack_mark = TRUE;
 				}
 				//FIXME we should eventually use the new stack_mark from coop
-				sgen_conservatively_pin_objects_from ((void **)aligned_stack_start, (void **)info->client_info.info.stack_end, start_nursery, end_nursery, PIN_TYPE_STACK);
+				pin_from_thread_memory (aligned_stack_start, info->client_info.info.stack_end, start_nursery, end_nursery);
 			}
 
 			if (!precise) {
-				sgen_conservatively_pin_objects_from ((void**)&info->client_info.ctx, (void**)(&info->client_info.ctx + 1),
-					start_nursery, end_nursery, PIN_TYPE_STACK);
+				pin_from_thread_memory (&info->client_info.ctx, &info->client_info.ctx + 1, start_nursery, end_nursery);
 
 				{
 					// This is used on Coop GC for platforms where we cannot get the data for individual registers.
@@ -2437,8 +2499,7 @@ sgen_client_scan_thread_data (void *start_nursery, void *end_nursery, gboolean p
 					//FIXME under coop, for now, what we need to ensure is that we scan any extra memory from info->client_info.info.stack_end to stack_mark
 					MonoThreadUnwindState *state = &info->client_info.info.thread_saved_state [SELF_SUSPEND_STATE_INDEX];
 					if (state && state->gc_stackdata) {
-						sgen_conservatively_pin_objects_from ((void **)state->gc_stackdata, (void**)((char*)state->gc_stackdata + state->gc_stackdata_size),
-							start_nursery, end_nursery, PIN_TYPE_STACK);
+						pin_from_thread_memory (state->gc_stackdata, (char*)state->gc_stackdata + state->gc_stackdata_size, start_nursery, end_nursery);
 					}
 				}
 			}

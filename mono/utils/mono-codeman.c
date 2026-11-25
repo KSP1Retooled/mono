@@ -358,6 +358,8 @@ mono_code_manager_destroy (MonoCodeManager *cman)
 {
 	if (!cman)
 		return;
+	if (cman->dynamic)
+		++dynamic_code_frees_count;
 	free_chunklist (cman, cman->full);
 	free_chunklist (cman, cman->current);
 	g_free (cman);

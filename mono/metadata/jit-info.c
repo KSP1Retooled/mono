@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 
 #include <mono/metadata/gc-internals.h>
+#include <mono/metadata/marshal.h>
 
 #include <mono/utils/atomic.h>
 #include <mono/utils/mono-compiler.h>
@@ -711,10 +712,36 @@ jit_info_table_add (MonoDomain *domain, MonoJitInfoTable *volatile *table_ptr, M
 	//jit_info_table_check (table);
 }
 
+MonoGCHandle
+mono_jit_code_owner_handle (MonoMethod *method)
+{
+	if (method->dynamic && method->wrapper_type == MONO_WRAPPER_RUNTIME_INVOKE)
+		method = mono_marshal_get_wrapper_info (method)->d.runtime_invoke.method;
+	else if (method->dynamic && method->wrapper_type == MONO_WRAPPER_NATIVE_TO_MANAGED)
+		return mono_marshal_get_managed_wrapper_owner (method);
+
+	return mono_method_get_code_owner_handle (method);
+}
+
+void
+mono_jit_info_register_code_owner (MonoJitInfo *ji, MonoMethod *method)
+{
+	MonoGCHandle owner = mono_jit_code_owner_handle (method);
+
+	if (!owner)
+		return;
+
+	ji->has_code_owner = TRUE;
+	mono_gc_register_code_owner (ji->code_start, ji->code_size, owner);
+}
+
 void
 mono_jit_info_table_add (MonoDomain *domain, MonoJitInfo *ji)
 {
 	g_assert (ji->d.method != NULL);
+
+	if (!ji->is_trampoline)
+		mono_jit_info_register_code_owner (ji, ji->d.method);
 
 	mono_domain_lock (domain);
 
@@ -806,6 +833,9 @@ void
 mono_jit_info_table_remove (MonoDomain *domain, MonoJitInfo *ji)
 {
 	MonoJitInfoTable *table;
+
+	if (ji->has_code_owner)
+		mono_gc_unregister_code_owner (ji->code_start, ji->code_size);
 
 	mono_domain_lock (domain);
 	table = domain->jit_info_table;

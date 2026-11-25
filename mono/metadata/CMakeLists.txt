@@ -164,6 +164,7 @@ set(metadata_sgen_sources
   sgen-tarjan-bridge.c
   sgen-toggleref.c
   sgen-stw.c
+  sgen-code-owners.cpp
   sgen-mono.c)
 
 # mono-config-dirs.c is a library of its own so that changing --prefix only
@@ -213,6 +214,7 @@ if(MONO_ENABLE_SGEN)
   _mono_add_metadata_variant(monoruntime_sgen
     SOURCES ${metadata_sgen_sources}
     DEFINITIONS HAVE_SGEN_GC)
+  target_link_libraries(monoruntime_sgen PRIVATE mono::llvm)
 endif()
 
 install(FILES

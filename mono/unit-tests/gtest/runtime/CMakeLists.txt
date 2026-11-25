@@ -55,8 +55,9 @@ endfunction()
 # one -- ConcHashTable -- that stands it up first.
 mono_add_unit_test(test-mono-utils SOURCES
   test-sgen-qsort.cpp test-memfuncs.cpp test-mono-handle.cpp
-  test-conc-hashtable.cpp)
+  test-sgen-code-owners.cpp test-conc-hashtable.cpp)
 mono_unit_test_cases(test-mono-utils test-sgen-qsort     "SgenQsort.*")
+mono_unit_test_cases(test-mono-utils test-sgen-code-owners "CodeOwners.*")
 mono_unit_test_cases(test-mono-utils test-memfuncs       "MemFuncs.*")
 mono_unit_test_cases(test-mono-utils test-mono-handle    "MonoHandle.*")
 mono_unit_test_cases(test-mono-utils test-conc-hashtable "ConcHashTable.*")

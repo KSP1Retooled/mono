@@ -8,6 +8,7 @@
 #include "jit.hpp"
 #include "naming.hpp"
 #include "options.hpp"
+#include "reclaim.hpp"
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/IRBuilder.h>
@@ -99,7 +100,7 @@ compile_thrower (MonoJit &jit, MonoDomain *domain, MonoMethod *method,
 	Expected<CompiledMethod> compiled =
 		jit.compile (ThreadSafeModule (std::move (module),
 	                                       ThreadSafeContext (std::move (context))),
-	                     name);
+	                     name, {}, {}, code_is_reclaimable (method));
 
 	if (!compiled)
 		return compiled.takeError ();

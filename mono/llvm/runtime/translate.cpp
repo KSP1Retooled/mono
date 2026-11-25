@@ -15,6 +15,7 @@
 #include "passes/inline-copies.hpp"
 #include "profile-inlines.hpp"
 #include "receivers.hpp"
+#include "reclaim.hpp"
 #include "timing.hpp"
 #include "trivial-inlines.hpp"
 
@@ -380,7 +381,7 @@ translate_body (const TranslationTarget &target, MonoMethod *method,
 		return target.jit->compile (
 			ThreadSafeModule (std::move (module),
 		                      ThreadSafeContext (std::move (context))),
-			entry, module_symbols, layout);
+			entry, module_symbols, layout, code_is_reclaimable (method));
 	}();
 	if (!compiled)
 		return compiled.takeError ();
@@ -885,7 +886,7 @@ compile_interop_entry (MonoJit &jit, MonoDomain *domain, MonoMethod *method,
 	Expected<CompiledMethod> compiled =
 		jit.compile (ThreadSafeModule (std::move (module),
 	                                       ThreadSafeContext (std::move (context))),
-	                     name);
+	                     name, {}, {}, code_is_reclaimable (method));
 
 	if (!compiled)
 		return compiled.takeError ();

@@ -2652,20 +2652,12 @@ setup_stack_trace (MonoException *mono_ex, GSList **dynamic_methods, TraceIps *t
 			MonoMList *list = (MonoMList*)mono_ex->dynamic_methods;
 
 			for (l = *dynamic_methods; l; l = l->next) {
-				MonoGCHandle dis_link;
-				MonoDomain *domain = mono_domain_get ();
+				MonoGCHandle owner = mono_method_get_code_owner_handle ((MonoMethod *)l->data);
+				MonoObject *o = owner ? mono_gchandle_get_target_internal (owner) : NULL;
 
-				if (domain->method_to_dyn_method) {
-					mono_domain_lock (domain);
-					dis_link = (MonoGCHandle)g_hash_table_lookup (domain->method_to_dyn_method, l->data);
-					mono_domain_unlock (domain);
-					if (dis_link) {
-						MonoObject *o = mono_gchandle_get_target_internal (dis_link);
-						if (o) {
-							list = mono_mlist_prepend_checked (list, o, error);
-							mono_error_assert_ok (error);
-						}
-					}
+				if (o && mono_object_domain (o) == mono_domain_get ()) {
+					list = mono_mlist_prepend_checked (list, o, error);
+					mono_error_assert_ok (error);
 				}
 			}
 

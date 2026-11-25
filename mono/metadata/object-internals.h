@@ -915,10 +915,7 @@ void
 mono_runtime_free_method    (MonoDomain *domain, MonoMethod *method);
 
 MonoGCHandle
-mono_method_get_code_owner_handle (MonoDomain *domain, MonoMethod *method);
-
-MonoObject *
-mono_method_get_code_owner (MonoGCHandle owner);
+mono_method_get_code_owner_handle (MonoMethod *method);
 
 void
 mono_install_callbacks      (MonoRuntimeCallbacks *cbs);
@@ -1005,6 +1002,15 @@ struct _MonoReflectionMethod {
 
 /* Safely access System.Reflection.MonoMethod from native code */
 TYPED_HANDLE_DECL (MonoReflectionMethod);
+
+/* System.Reflection.RuntimeMethodInfo */
+typedef struct {
+	MonoReflectionMethod method;
+	/* NULL unless the method is a dynamic method. */
+	MonoObject *code_owner;
+} MonoReflectionDynamicMethodInfo;
+
+TYPED_HANDLE_DECL (MonoReflectionDynamicMethodInfo);
 
 struct _MonoDelegate {
 	MonoObject object;

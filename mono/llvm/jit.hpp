@@ -35,6 +35,7 @@ class TargetMachine;
 namespace mono {
 
 class CodeArena;
+class CodeMemoryManager;
 class InlineCandidates;
 
 namespace gdbjit {
@@ -306,10 +307,14 @@ public:
 	/// The module must already have been through optimize (), which is where
 	/// the tier is decided. Hand back what optimize () answered as layout, and
 	/// the result carries it with the address the link gave the counters.
+	///
+	/// With reclaimable, remove_dylibs () gives the object's memory to a later
+	/// compile. The caller then owes it the proof that no thread can be in any
+	/// of the object's code, linker stubs included.
 	llvm::Expected<CompiledMethod>
 	compile (llvm::orc::ThreadSafeModule tsm, llvm::StringRef entry,
 	        llvm::ArrayRef<std::pair<llvm::StringRef, void *>> module_symbols = {},
-	        llvm::ArrayRef<ProfileCounters> layout = {});
+	        llvm::ArrayRef<ProfileCounters> layout = {}, bool reclaimable = false);
 
 	/// Compile one module holding several methods, on the terms compile ()
 	/// states, and return one result per name in entries and in that order.
@@ -322,13 +327,13 @@ public:
 	llvm::Expected<std::vector<CompiledMethod>>
 	compile_batch (llvm::orc::ThreadSafeModule tsm, llvm::ArrayRef<llvm::StringRef> entries,
 	              llvm::ArrayRef<std::pair<llvm::StringRef, void *>> module_symbols = {},
-	              llvm::ArrayRef<ProfileCounters> layout = {});
+	              llvm::ArrayRef<ProfileCounters> layout = {}, bool reclaimable = false);
 
 	/// Release the dylibs: their code, their side tables, and the ORC
 	/// bookkeeping for them.
 	///
-	/// The reserved bytes stay reserved - CodeArena frees only the whole
-	/// arena, so this does not give a later compile memory to reuse.
+	/// The bytes of an object that was not compiled reclaimable stay reserved
+	/// until the arena goes.
 	///
 	/// The caller proves the code dead - nothing executing in it, nothing about
 	/// to call into it. Any stub still pointing at it must already be undefined.
@@ -374,7 +379,14 @@ private:
 
 	std::unique_ptr<llvm::orc::LLJIT> jit_;
 
+	/// Owned by jit_'s linking layer.
+	CodeMemoryManager *memory_ = nullptr;
+
 	llvm::orc::JITDylib *helpers_ = nullptr;
+
+	/// How many dylibs have been removed since the dead symbol names were
+	/// dropped.
+	std::atomic<uint32_t> dylibs_removed_ { 0 };
 
 	std::mutex named_symbols_mutex_;
 	std::unordered_map<std::string, void *> named_symbols_;

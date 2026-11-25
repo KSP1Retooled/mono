@@ -157,11 +157,13 @@ namespace System.Reflection {
 	, ISerializable
 #endif
 	{
-#pragma warning disable 649
+#pragma warning disable 169, 649
 		internal IntPtr mhandle;
 		string name;
 		Type reftype;
-#pragma warning restore 649
+		/* Keeps a dynamic method's DynamicMethod alive. The runtime sets it. */
+		object code_owner;
+#pragma warning restore 169, 649
 
 		internal BindingFlags BindingFlags {
 			get {
@@ -281,10 +283,6 @@ namespace System.Reflection {
 		internal RuntimeMethodInfo () {
 		}
 
-		internal RuntimeMethodInfo (RuntimeMethodHandle mhandle) {
-			this.mhandle = mhandle.Value;
-		}
-		
 		[MethodImplAttribute(MethodImplOptions.InternalCall)]
 		internal static extern string get_name (MethodBase method);
 

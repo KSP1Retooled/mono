@@ -49,10 +49,13 @@
 #define mono_simd_shuffle_mask(a,b,c,d) ((a) | ((b) << 2) | ((c) << 4) | ((d) << 6))
 //XXX this ignores if t is byref
 #define MONO_TYPE_IS_PRIMITIVE_SCALAR(t) ((((((t)->type >= MONO_TYPE_BOOLEAN && (t)->type <= MONO_TYPE_U8) || ((t)->type >= MONO_TYPE_I && (t)->type <= MONO_TYPE_U)))))
-typedef struct {
+typedef struct _MonoJitDynamicMethodInfo MonoJitDynamicMethodInfo;
+struct _MonoJitDynamicMethodInfo {
+	/* Another compile of the same method. Two threads can each compile it. */
+	MonoJitDynamicMethodInfo *next;
 	MonoJitInfo *ji;
 	MonoCodeManager *code_mp;
-} MonoJitDynamicMethodInfo;
+};
 typedef struct {
 	guint32 index;
 	MonoExceptionClause *clause;

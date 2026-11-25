@@ -218,10 +218,39 @@ MonoDomainMethod::install_detour (void *target)
 void
 MonoDomainMethod::note_inlined_into (MonoMethod *root)
 {
-	std::lock_guard<RecordLock> held (lock_);
+	{
+		std::lock_guard<RecordLock> held (lock_);
 
-	if (!llvm::is_contained (inlined_into_, root))
-		inlined_into_.push_back (root);
+		inlined_into_.insert (root);
+	}
+
+	if (!root->dynamic)
+		return;
+
+	if (MonoDomainMethod *record = domain_method_find (domain, root)) {
+		std::lock_guard<RecordLock> held (record->lock_);
+
+		record->inlined_.insert (this);
+	}
+}
+
+void
+MonoDomainMethod::forget_inlined ()
+{
+	llvm::SmallPtrSet<MonoDomainMethod *, 2> callees;
+
+	{
+		std::lock_guard<RecordLock> held (lock_);
+
+		std::swap (callees, inlined_);
+	}
+
+	// One record's lock at a time: two roots can have inlined each other's callee.
+	for (MonoDomainMethod *callee : callees) {
+		std::lock_guard<RecordLock> held (callee->lock_);
+
+		callee->inlined_into_.erase (method);
+	}
 }
 
 void
@@ -279,7 +308,7 @@ MonoDomainMethod::drop_inlined_bodies ()
 	{
 		std::lock_guard<RecordLock> held (lock_);
 
-		roots = inlined_into_;
+		roots.assign (inlined_into_.begin (), inlined_into_.end ());
 	}
 
 	for (MonoMethod *root : roots)

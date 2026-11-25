@@ -300,6 +300,7 @@ mono_delegate_to_ftnptr_impl (MonoDelegateHandle delegate, MonoError *error)
 	MonoMethod *method, *wrapper;
 	MonoClass *klass;
 	MonoGCHandle target_handle = 0;
+	MonoGCHandle owner_handle = 0;
 
 	if (MONO_HANDLE_IS_NULL (delegate))
 		goto leave;
@@ -337,8 +338,11 @@ mono_delegate_to_ftnptr_impl (MonoDelegateHandle delegate, MonoError *error)
 		/* Produce a location which can be embedded in JITted code */
 		target_handle = mono_gchandle_new_weakref_from_handle (delegate_target);
 	}
+	/* A shared wrapper would keep a dynamic method's code for the life of its image. */
+	if (target_handle || method->wrapper_type == MONO_WRAPPER_DYNAMIC_METHOD)
+		owner_handle = mono_gchandle_new_weakref_from_handle (MONO_HANDLE_CAST (MonoObject, delegate));
 
-	wrapper = mono_marshal_get_managed_wrapper (method, klass, target_handle, error);
+	wrapper = mono_marshal_get_managed_wrapper (method, klass, target_handle, owner_handle, error);
 	goto_if_nok (error, leave);
 
 	MONO_HANDLE_SETVAL (delegate, delegate_trampoline, gpointer, mono_compile_method_checked (wrapper, error));
@@ -355,6 +359,8 @@ mono_delegate_to_ftnptr_impl (MonoDelegateHandle delegate, MonoError *error)
 leave:
 	if (!is_ok (error) && target_handle != 0)
 		mono_gchandle_free_internal (target_handle);
+	if (!is_ok (error) && owner_handle != 0)
+		mono_gchandle_free_internal (owner_handle);
 	return result;
 }
 
@@ -399,9 +405,6 @@ delegate_hash_table_remove (MonoDelegate *d)
 {
 	MonoGCHandle gchandle = NULL;
 
-	if (!d->target)
-		return;
-
 	mono_marshal_lock ();
 	if (delegate_hash_table == NULL)
 		delegate_hash_table = delegate_hash_table_new ();
@@ -419,10 +422,9 @@ delegate_hash_table_add (MonoDelegateHandle d)
 	if (delegate_hash_table == NULL)
 		delegate_hash_table = delegate_hash_table_new ();
 	gpointer delegate_trampoline = MONO_HANDLE_GETVAL (d, delegate_trampoline);
-	gboolean has_target = MONO_HANDLE_GETVAL (d, target) != NULL;
-	if (has_target) {
-		// If the delegate has an instance method there is 1 to 1 mapping between
-		// the delegate object and the delegate_trampoline
+	if (MONO_HANDLE_GETVAL (d, target) || MONO_HANDLE_GETVAL (d, method)->wrapper_type == MONO_WRAPPER_DYNAMIC_METHOD) {
+		// If the delegate has an instance method or a dynamic method there is 1 to 1
+		// mapping between the delegate object and the delegate_trampoline
 		MonoGCHandle gchandle = (MonoGCHandle)g_hash_table_lookup (delegate_hash_table, delegate_trampoline);
 		if (gchandle) {
 			// Somehow, some other thread beat us to it ?
@@ -559,27 +561,32 @@ void
 mono_delegate_free_ftnptr (MonoDelegate *delegate)
 {
 	MonoJitInfo *ji;
-	void *ptr;
+	MonoMethod *method = NULL;
+	void *ptr = delegate->delegate_trampoline;
+
+	if (ptr) {
+		ji = mono_jit_info_table_find (mono_domain_get (), mono_get_addr_from_ftnptr (ptr));
+		if (ji)
+			method = mono_jit_info_get_method (ji);
+	}
+
+	if (!delegate->target && !(method && method->dynamic)) {
+		/* The wrapper method is shared between delegates -> no need to free it */
+		mono_atomic_xchg_ptr (&delegate->delegate_trampoline, NULL);
+		return;
+	}
 
 	delegate_hash_table_remove (delegate);
 
 	ptr = (gpointer)mono_atomic_xchg_ptr (&delegate->delegate_trampoline, NULL);
 
-	if (!delegate->target) {
-		/* The wrapper method is shared between delegates -> no need to free it */
-		return;
-	}
-
 	if (ptr) {
-		MonoGCHandle gchandle;
+		MonoGCHandle gchandle, owner;
 		void **method_data;
-		MonoMethod *method;
 
-		ji = mono_jit_info_table_find (mono_domain_get (), mono_get_addr_from_ftnptr (ptr));
-		if (!ji)
+		if (!method)
 			return;
 
-		method = mono_jit_info_get_method (ji);
 		method_data = (void **)((MonoMethodWrapper*)method)->method_data;
 
 		/*the target gchandle is the first entry after size and the wrapper itself.*/
@@ -588,8 +595,28 @@ mono_delegate_free_ftnptr (MonoDelegate *delegate)
 		if (gchandle)
 			mono_gchandle_free_internal (gchandle);
 
+		owner = mono_marshal_get_managed_wrapper_owner (method);
 		mono_runtime_free_method (mono_object_domain (delegate), method);
+		/* The collector can resolve the handle until the wrapper's code is unregistered. */
+		mono_gchandle_free_internal (owner);
 	}
+}
+
+/*
+ * mono_marshal_get_managed_wrapper_owner:
+ *
+ *   Returns a weak handle on the delegate the native-to-managed wrapper WRAPPER is freed
+ * with. WRAPPER must be dynamic.
+ */
+MonoGCHandle
+mono_marshal_get_managed_wrapper_owner (MonoMethod *wrapper)
+{
+	void **method_data = (void **)((MonoMethodWrapper*)wrapper)->method_data;
+
+	g_assert (wrapper->dynamic && wrapper->wrapper_type == MONO_WRAPPER_NATIVE_TO_MANAGED);
+
+	/* The entry behind the target's gchandle. */
+	return (MonoGCHandle)method_data [3];
 }
 
 /* This is a JIT icall, it sets the pending exception (in wrapper) and returns NULL on error */
@@ -2587,6 +2614,77 @@ wrapper_cache_signature_key_equal (MonoWrapperSignatureCacheKey *key1, MonoWrapp
 	return runtime_invoke_signature_equal (key1->signature, key2->signature);
 }
 
+static gboolean
+type_loaded_with_image (MonoType *t, MonoImage **home)
+{
+	MonoImage *image;
+	MonoGenericInst *inst;
+	int i;
+
+	if (t->has_cmods)
+		return FALSE;
+
+	switch (t->type) {
+	case MONO_TYPE_CLASS:
+	case MONO_TYPE_VALUETYPE:
+		image = m_class_get_image (t->data.klass);
+		break;
+	case MONO_TYPE_SZARRAY:
+		return type_loaded_with_image (m_class_get_byval_arg (t->data.klass), home);
+	case MONO_TYPE_ARRAY:
+		return type_loaded_with_image (m_class_get_byval_arg (t->data.array->eklass), home);
+	case MONO_TYPE_PTR:
+		return type_loaded_with_image (t->data.type, home);
+	case MONO_TYPE_GENERICINST:
+		inst = t->data.generic_class->context.class_inst;
+		for (i = 0; i < inst->type_argc; ++i)
+			if (!type_loaded_with_image (inst->type_argv [i], home))
+				return FALSE;
+		image = m_class_get_image (t->data.generic_class->container_class);
+		break;
+	case MONO_TYPE_FNPTR:
+	case MONO_TYPE_VAR:
+	case MONO_TYPE_MVAR:
+		return FALSE;
+	default:
+		return TRUE;
+	}
+
+	if (image == mono_defaults.corlib)
+		return TRUE;
+	if (*home == mono_defaults.corlib)
+		*home = image;
+	return *home == image;
+}
+
+/*
+ * Returns the image to share METHOD's runtime invoke wrapper in, or NULL where it needs a
+ * wrapper of its own.
+ *
+ * A wrapper shared by signature names the signature's types, so an image can hold one only
+ * if it is unloaded no later than they are. The image of an ordinary method's class always
+ * can. A dynamic method's class has no such relation to the types in its signature.
+ */
+static MonoImage*
+dynamic_method_invoke_image (MonoMethod *method)
+{
+	MonoMethodSignature *sig;
+	MonoImage *home = mono_defaults.corlib;
+	gboolean shared;
+	int i;
+
+	if (method->wrapper_type != MONO_WRAPPER_DYNAMIC_METHOD || mono_method_signature_internal (method)->hasthis)
+		return NULL;
+
+	sig = mono_marshal_get_runtime_invoke_sig (mono_method_signature_internal (method));
+	shared = type_loaded_with_image (sig->ret, &home);
+	for (i = 0; shared && i < sig->param_count; ++i)
+		shared = type_loaded_with_image (sig->params [i], &home);
+	g_free (sig);
+
+	return shared ? home : NULL;
+}
+
 /**
  * mono_marshal_get_runtime_invoke:
  * Generates IL code for the runtime invoke function:
@@ -2615,6 +2713,8 @@ mono_marshal_get_runtime_invoke_full (MonoMethod *method, gboolean virtual_, gbo
 	WrapperInfo *info;
 	MonoWrapperMethodCacheKey *method_key;
 	MonoWrapperMethodCacheKey method_key_lookup_only;
+	gboolean owned = method->wrapper_type == MONO_WRAPPER_DYNAMIC_METHOD && need_direct_wrapper;
+	MonoImage *shared_image = !need_direct_wrapper ? dynamic_method_invoke_image (method) : NULL;
 	memset (&method_key_lookup_only, 0, sizeof (method_key_lookup_only));
 	method_key_lookup_only.method = method;
 	method_key_lookup_only.virtual_ = virtual_;
@@ -2645,7 +2745,7 @@ mono_marshal_get_runtime_invoke_full (MonoMethod *method, gboolean virtual_, gbo
 		if (!callsig)
 			callsig = add_string_ctor_signature (method);
 	} else {
-		if (method_is_dynamic (method))
+		if (method_is_dynamic (method) && method->wrapper_type != MONO_WRAPPER_DYNAMIC_METHOD)
 			callsig = mono_metadata_signature_dup_full (get_method_image (method), mono_method_signature_internal (method));
 		else
 			callsig = mono_method_signature_internal (method);
@@ -2653,7 +2753,10 @@ mono_marshal_get_runtime_invoke_full (MonoMethod *method, gboolean virtual_, gbo
 
 	sig = mono_method_signature_internal (method);
 
-	target_klass = get_wrapper_target_class (m_class_get_image (method->klass));
+	if (shared_image == mono_defaults.corlib)
+		target_klass = mono_defaults.object_class;
+	else
+		target_klass = get_wrapper_target_class (shared_image ? shared_image : m_class_get_image (method->klass));
 
 	/* Try to share wrappers for non-corlib methods with simple signatures */
 	if (mono_metadata_signature_equal (callsig, cctor_signature)) {
@@ -2676,7 +2779,13 @@ mono_marshal_get_runtime_invoke_full (MonoMethod *method, gboolean virtual_, gbo
 		sig_key.signature = callsig;
 		sig_key.valuetype = m_class_is_valuetype (method->klass);
 
-		cache_table = &mono_method_get_wrapper_cache (method)->runtime_invoke_signature_cache;
+		if (shared_image) {
+			/* A static method's wrapper ignores the class, so every class can share it. */
+			sig_key.valuetype = FALSE;
+			cache_table = &shared_image->wrapper_caches.runtime_invoke_signature_cache;
+		} else {
+			cache_table = &mono_method_get_wrapper_cache (method)->runtime_invoke_signature_cache;
+		}
 		sig_cache = get_cache (cache_table, (GHashFunc) wrapper_cache_signature_key_hash, (GCompareFunc) wrapper_cache_signature_key_equal);
 
 		/* from mono_marshal_find_in_cache */
@@ -2695,7 +2804,14 @@ mono_marshal_get_runtime_invoke_full (MonoMethod *method, gboolean virtual_, gbo
 		g_free (tmp_sig);
 	}
 
-	csig = mono_metadata_signature_alloc (m_class_get_image (target_klass), 4);
+	if (owned) {
+		/* Freed with the wrapper. */
+		csig = (MonoMethodSignature *)g_malloc0 (MONO_SIZEOF_METHOD_SIGNATURE + 4 * sizeof (MonoType *));
+		csig->param_count = 4;
+		csig->sentinelpos = -1;
+	} else {
+		csig = mono_metadata_signature_alloc (m_class_get_image (target_klass), 4);
+	}
 
 	MonoType *object_type = mono_get_object_type ();
 	MonoType *int_type = mono_get_int_type ();
@@ -2717,6 +2833,8 @@ mono_marshal_get_runtime_invoke_full (MonoMethod *method, gboolean virtual_, gbo
 	name = mono_signature_to_name (callsig, virtual_ ? "runtime_invoke_virtual" : (need_direct_wrapper ? "runtime_invoke_direct" : "runtime_invoke"));
 	mb = mono_mb_new (target_klass, name,  MONO_WRAPPER_RUNTIME_INVOKE);
 	g_free (name);
+	if (owned)
+		get_marshal_cb ()->mb_set_dynamic (mb);
 
 	param_names [0] = "this";
 	param_names [1] = "params";
@@ -2729,14 +2847,25 @@ mono_marshal_get_runtime_invoke_full (MonoMethod *method, gboolean virtual_, gbo
 	memcpy (method_key, &method_key_lookup_only, sizeof (MonoWrapperMethodCacheKey));
 
 	if (need_direct_wrapper || virtual_) {
+		gboolean found;
+
 		get_marshal_cb ()->mb_skip_visibility (mb);
-		info = mono_wrapper_info_create (mb, virtual_ ? WRAPPER_SUBTYPE_RUNTIME_INVOKE_VIRTUAL : WRAPPER_SUBTYPE_RUNTIME_INVOKE_DIRECT);
+		if (owned) {
+			info = g_new0 (WrapperInfo, 1);
+			info->subtype = WRAPPER_SUBTYPE_RUNTIME_INVOKE_DIRECT;
+		} else {
+			info = mono_wrapper_info_create (mb, virtual_ ? WRAPPER_SUBTYPE_RUNTIME_INVOKE_VIRTUAL : WRAPPER_SUBTYPE_RUNTIME_INVOKE_DIRECT);
+		}
 		info->d.runtime_invoke.method = method;
-		res = mono_mb_create_and_cache_full (method_cache, method_key, mb, csig, sig->param_count + 16, info, NULL);
+		res = mono_mb_create_and_cache_full (method_cache, method_key, mb, csig, sig->param_count + 16, info, &found);
+		if (owned && found) {
+			g_free (info);
+			g_free (method_key);
+		}
 	} else {
 		MonoWrapperSignatureCacheKey *sig_key = g_new0 (MonoWrapperSignatureCacheKey, 1);
 		sig_key->signature = callsig;
-		sig_key->valuetype = m_class_is_valuetype (method->klass);
+		sig_key->valuetype = !shared_image && m_class_is_valuetype (method->klass);
 
 		/* taken from mono_mb_create_and_cache */
 		mono_marshal_lock ();
@@ -2756,7 +2885,10 @@ mono_marshal_get_runtime_invoke_full (MonoMethod *method, gboolean virtual_, gbo
 			if (!res) {
 				res = newm;
 				g_hash_table_insert (sig_cache, sig_key, res);
-				g_hash_table_insert (method_cache, method_key, res);
+				if (shared_image)
+					g_free (method_key);
+				else
+					g_hash_table_insert (method_cache, method_key, res);
 			} else {
 				mono_free_method (newm);
 				g_free (sig_key);
@@ -2784,7 +2916,7 @@ mono_marshal_get_runtime_invoke (MonoMethod *method, gboolean virtual_)
 	if (virtual_)
 		need_direct_wrapper = TRUE;
 
-	if (method->dynamic)
+	if (method->dynamic && !dynamic_method_invoke_image (method))
 		need_direct_wrapper = TRUE;
 
 	if (m_class_get_rank (method->klass) && (method->iflags & METHOD_IMPL_ATTRIBUTE_INTERNAL_CALL) &&
@@ -3927,13 +4059,15 @@ method_signature_is_blittable (MonoMethodSignature *sig)
 /**
  * mono_marshal_get_managed_wrapper:
  * Generates IL code to call managed methods from unmanaged code 
- * If \p target_handle is \c 0, the wrapper info will be a \c WrapperInfo structure.
+ * If \p owner_handle is \c 0, the wrapper info will be a \c WrapperInfo structure. Otherwise it is a
+ * weak handle on the delegate the wrapper is freed with, and the wrapper is dynamic. A wrapper with a
+ * \p target_handle needs one.
  *
  * If \p delegate_klass is \c NULL, we're creating a wrapper for a function pointer to a method marked with
  * UnamangedCallersOnlyAttribute.
  */
 MonoMethod *
-mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass, MonoGCHandle target_handle, MonoError *error)
+mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass, MonoGCHandle target_handle, MonoGCHandle owner_handle, MonoError *error)
 {
 	MonoMethodSignature *sig, *csig, *invoke_sig;
 	MonoMethodBuilder *mb;
@@ -3945,6 +4079,7 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 	EmitMarshalContext m;
 
 	g_assert (method != NULL);
+	g_assert (owner_handle || !target_handle);
 	error_init (error);
 
 	if (method->flags & METHOD_ATTRIBUTE_PINVOKE_IMPL) {
@@ -3959,7 +4094,7 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 	 */
 	cache = get_cache (&mono_method_get_wrapper_cache (method)->managed_wrapper_cache, mono_aligned_addr_hash, NULL);
 
-	if (!target_handle && (res = mono_marshal_find_in_cache (cache, method)))
+	if (!owner_handle && (res = mono_marshal_find_in_cache (cache, method)))
 		return res;
 
 	if (G_UNLIKELY (!delegate_klass)) {
@@ -4003,9 +4138,11 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 
 	/*the target gchandle must be the first entry after size and the wrapper itself.*/
 	mono_mb_add_data (mb, target_handle);
+	if (owner_handle)
+		mono_mb_add_data (mb, owner_handle);
 
 	/* we copy the signature, so that we can modify it */
-	if (target_handle)
+	if (owner_handle)
 		/* Need to free this later */
 		csig = mono_metadata_signature_dup (invoke_sig);
 	else
@@ -4104,7 +4241,7 @@ mono_marshal_get_managed_wrapper (MonoMethod *method, MonoClass *delegate_klass,
 		return NULL;
 	}
 
-	if (!target_handle) {
+	if (!owner_handle) {
 		WrapperInfo *info;
 
 		// FIXME: Associate it with the method+delegate_klass pair
@@ -6528,6 +6665,35 @@ mono_marshal_get_thunk_invoke_wrapper (MonoMethod *method)
 	mono_mb_free (mb);
 
 	return res;
+}
+
+/*
+ * mono_marshal_take_dynamic_invoke_wrapper:
+ *
+ *   Returns the runtime invoke wrapper the dynamic method METHOD has to itself, or NULL if
+ * it has none. The caller frees the wrapper, and *INFO after it.
+ */
+MonoMethod *
+mono_marshal_take_dynamic_invoke_wrapper (MonoMethod *method, WrapperInfo **info)
+{
+	MonoWrapperMethodCacheKey key = {method, FALSE, TRUE};
+	GHashTable *cache = get_method_image (method)->wrapper_caches.runtime_invoke_method_cache;
+	gpointer orig_key = NULL, wrapper = NULL;
+
+	/* A domain can be torn down after marshalling has been. */
+	if (!cache || !marshal_mutex_initialized)
+		return NULL;
+
+	mono_marshal_lock ();
+	if (g_hash_table_lookup_extended (cache, &key, &orig_key, &wrapper)) {
+		g_hash_table_remove (cache, &key);
+		g_free (orig_key);
+	}
+	mono_marshal_unlock ();
+
+	if (wrapper)
+		*info = mono_marshal_get_wrapper_info ((MonoMethod *)wrapper);
+	return (MonoMethod *)wrapper;
 }
 
 static void

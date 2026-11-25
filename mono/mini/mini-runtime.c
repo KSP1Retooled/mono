@@ -597,6 +597,7 @@ mono_tramp_info_register_reclaimable (MonoDomain *domain, MonoMethod *method, gp
 		mono_emit_jit_tramp (info->code, info->code_size, info->name);
 	raise_code_stub (info);
 
+	mono_jit_info_register_code_owner (ji, method);
 	mono_jit_info_table_add (domain, ji);
 
 	return ji;

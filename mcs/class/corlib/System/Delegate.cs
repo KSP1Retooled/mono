@@ -476,7 +476,11 @@ namespace System
 
 		public virtual object Clone ()
 		{
-			return MemberwiseClone ();
+			Delegate clone = (Delegate) MemberwiseClone ();
+
+			/* The native entry is freed with this delegate. */
+			clone.delegate_trampoline = IntPtr.Zero;
+			return clone;
 		}
 
 		public override bool Equals (object obj)

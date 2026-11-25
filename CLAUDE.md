@@ -799,8 +799,13 @@ mono's own code manager plus a mutex. Everything the backend allocates comes out
 a linked object's code, its read-only data, its mutable globals and the thunks — and all
 of it stays read-write-execute for its whole life. Two things follow.
 
-There is **no per-object free**. A code manager frees only whole, so a retired method
-keeps its bytes until the arena goes with the domain.
+A code manager **frees only whole**. Only a dynamic method is ever freed before its
+domain, and only its objects and its thunk come back to the arena, as blocks on a free
+list for each size class (`reserve_block ()`). `code_is_reclaimable ()`
+(`runtime/reclaim.hpp`) decides, and it needs SGen: the collector counts an address in
+the code as a reference to the object that owns the method, so no thread can be in a
+block that comes back. Under Boehm a freed method keeps its bytes until the arena goes
+with the domain.
 
 And **reach is a property of where the memory lands**. Chunks are mapped `MAP_32BIT`
 (`ARCH_MAP_FLAGS`, `mono/utils/mono-codeman.c`), so every address is below 2GB and any

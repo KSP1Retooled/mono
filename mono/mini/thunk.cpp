@@ -3,8 +3,7 @@
  * \brief Carving redirectable thunks directly out of a domain's CodeArena.
  *
  * A thunk costs arch::thunk_size bytes, reserved from the domain's
- * CodeArena. A redirect is a single atomic store to the slot. There is no
- * pool of retired thunks to reuse.
+ * CodeArena. A redirect is a single atomic store to the slot.
  */
 
 #include "thunk.hpp"
@@ -157,11 +156,23 @@ Thunk::register_jinfo (std::string_view name, MonoDomain *domain, MonoMethod *me
 	                           name, domain, method, perf::enabled ());
 }
 
-llvm::Expected<Thunk>
-Thunk::allocate (CodeArena *arena, ThunkPool &pool, void *key)
+void
+Thunk::release (CodeArena *arena)
 {
-	if (!perf::enabled ()) {
-		llvm::Expected<char *> data = arena->reserve (arch::thunk_size, arch::thunk_alignment);
+	if (!*this)
+		return;
+
+	arena->release_block ((char *) data_, arch::thunk_size);
+	data_ = nullptr;
+}
+
+llvm::Expected<Thunk>
+Thunk::allocate (CodeArena *arena, ThunkPool &pool, void *key, bool reclaimable)
+{
+	if (reclaimable || !perf::enabled ()) {
+		llvm::Expected<char *> data =
+			reclaimable ? arena->reserve_block (arch::thunk_size, arch::thunk_alignment)
+				    : arena->reserve (arch::thunk_size, arch::thunk_alignment);
 		if (!data)
 			return data.takeError ();
 

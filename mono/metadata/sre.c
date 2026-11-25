@@ -4138,16 +4138,22 @@ free_dynamic_method (void *dynamic_method)
 	DynamicMethodReleaseData *data = (DynamicMethodReleaseData *)dynamic_method;
 	MonoDomain *domain = data->domain;
 	MonoMethod *method = data->handle;
-	MonoGCHandle dis_link;
+	MonoGCHandle owner = mono_method_get_code_owner_handle (method);
+	MonoGCHandle info = ((MonoDynamicMethod *)method)->info;
+	WrapperInfo *invoke_info = NULL;
+	MonoMethod *invoke = mono_marshal_take_dynamic_invoke_wrapper (method, &invoke_info);
 
-	mono_domain_lock (domain);
-	dis_link = g_hash_table_lookup (domain->method_to_dyn_method, method);
-	g_hash_table_remove (domain->method_to_dyn_method, method);
-	mono_domain_unlock (domain);
-	g_assert (dis_link);
-	mono_gchandle_free_internal (dis_link);
+	g_assert (owner);
 
+	if (invoke) {
+		mono_runtime_free_method (domain, invoke);
+		g_free (invoke_info);
+	}
 	mono_runtime_free_method (domain, method);
+	/* The collector can resolve the handle until the method's code is unregistered. */
+	mono_gchandle_free_internal (owner);
+	if (info)
+		mono_gchandle_free_internal (info);
 	g_free (data);
 }
 
@@ -4162,7 +4168,6 @@ reflection_create_dynamic_method (MonoReflectionDynamicMethodHandle ref_mb, Mono
 	ReflectionMethodBuilder rmb;
 	MonoMethodSignature *sig;
 	MonoClass *klass;
-	MonoDomain *domain;
 	GSList *l;
 	int i;
 	gboolean ret = TRUE;
@@ -4257,6 +4262,9 @@ reflection_create_dynamic_method (MonoReflectionDynamicMethodHandle ref_mb, Mono
 	g_free (rmb.refs);
 	goto_if_nok (error, exit_false);
 
+	/* Compiling the method registers its code under this handle. */
+	((MonoDynamicMethod*)handle)->owner = mono_gchandle_new_weakref_internal ((MonoObject *)mb, TRUE);
+
 	release_data = g_new (DynamicMethodReleaseData, 1);
 	release_data->handle = handle;
 	release_data->domain = mono_object_get_domain_internal ((MonoObject*)mb);
@@ -4278,13 +4286,6 @@ reflection_create_dynamic_method (MonoReflectionDynamicMethodHandle ref_mb, Mono
 		}
 	}
 	g_slist_free (mb->referenced_by);
-
-	domain = mono_domain_get ();
-	mono_domain_lock (domain);
-	if (!domain->method_to_dyn_method)
-		domain->method_to_dyn_method = g_hash_table_new (NULL, NULL);
-	g_hash_table_insert (domain->method_to_dyn_method, handle, mono_gchandle_new_weakref_internal ((MonoObject *)mb, TRUE));
-	mono_domain_unlock (domain);
 
 	goto exit;
 exit_false:

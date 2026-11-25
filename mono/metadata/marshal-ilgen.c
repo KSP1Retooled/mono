@@ -1742,7 +1742,9 @@ emit_runtime_invoke_body_ilgen (MonoMethodBuilder *mb, const char **param_names,
 	MonoExceptionClause *clause;
 	int loc_res, loc_exc;
 
-	mono_mb_set_param_names (mb, param_names);
+	/* The names go in the image's mempool, which outlives a dynamic wrapper. */
+	if (!mb->dynamic)
+		mono_mb_set_param_names (mb, param_names);
 
 	/* The wrapper looks like this:
 	 *
@@ -1779,7 +1781,10 @@ emit_runtime_invoke_body_ilgen (MonoMethodBuilder *mb, const char **param_names,
 	labels [2] = mono_mb_emit_branch (mb, CEE_LEAVE);
 
 	/* Add a try clause around the call */
-	clause = (MonoExceptionClause *)mono_image_alloc0 (image, sizeof (MonoExceptionClause));
+	if (mb->dynamic)
+		clause = g_new0 (MonoExceptionClause, 1);
+	else
+		clause = (MonoExceptionClause *)mono_image_alloc0 (image, sizeof (MonoExceptionClause));
 	clause->flags = MONO_EXCEPTION_CLAUSE_NONE;
 	clause->data.catch_class = mono_defaults.exception_class;
 	clause->try_offset = labels [1];

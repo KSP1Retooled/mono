@@ -243,6 +243,16 @@ int mono_gc_register_root_wbarrier (char *start, size_t size, MonoGCDescriptor d
 
 void mono_gc_wbarrier_set_root (gpointer ptr, MonoObject *value);
 
+/**
+ * Keeps the target of the weak handle \p owner alive while a thread holds an address
+ * in the \p size bytes at \p code, on its stack or in a register.
+ *
+ * Only SGen does this. Under another collector these functions do nothing. The caller
+ * unregisters the code before it frees the code or the handle.
+ */
+void mono_gc_register_code_owner (gpointer code, gsize size, MonoGCHandle owner);
+void mono_gc_unregister_code_owner (gpointer code, gsize size);
+
 /* Set a field of a root registered using mono_gc_register_root_wbarrier () */
 #define MONO_ROOT_SETREF(s,fieldname,value) do {	\
 	mono_gc_wbarrier_set_root (&((s)->fieldname), (MonoObject*)value); \

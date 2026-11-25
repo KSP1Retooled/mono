@@ -375,6 +375,8 @@ struct _MonoJitInfo {
 	 */
 	guint32    tier : 4;
 
+	guint32    has_code_owner : 1;
+
 	/*
 	 * This body's own native_offset -> il_offset map - see MonoILOffsetEntry
 	 * above - or NULL when its compiler recovered none. Carved out of the same
@@ -575,9 +577,6 @@ struct _MonoDomain {
 	/* that require wrappers */
 	GHashTable *ftnptrs_hash; // TODO: need to move?
 
-	/* Maps MonoMethod* to weak links to DynamicMethod objects */
-	GHashTable *method_to_dyn_method;
-
 	/* <ThrowUnobservedTaskExceptions /> support */
 	gboolean throw_unobserved_task_exceptions;
 
@@ -671,6 +670,22 @@ mono_jit_info_table_free (MonoJitInfoTable *table);
 
 void
 mono_jit_info_table_add    (MonoDomain *domain, MonoJitInfo *ji);
+
+/**
+ * Returns a weak handle on the object whose death frees \p method's code, or NULL where no
+ * object does. \p method can be a wrapper that is freed with a delegate or a dynamic method.
+ */
+MonoGCHandle
+mono_jit_code_owner_handle (MonoMethod *method);
+
+/**
+ * Keeps the object that owns \p method's code alive while a thread holds an address in
+ * \p ji, until \p ji is removed from the table.
+ *
+ * Adding a record to the table does this already, except for a trampoline's record.
+ */
+void
+mono_jit_info_register_code_owner (MonoJitInfo *ji, MonoMethod *method);
 
 void
 mono_jit_info_table_remove (MonoDomain *domain, MonoJitInfo *ji);

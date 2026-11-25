@@ -1055,6 +1055,7 @@ mono_dynamic_code_hash_insert (MonoDomain *domain, MonoMethod *method, MonoJitDy
 {
 	if (!domain_jit_info (domain)->dynamic_code_hash)
 		domain_jit_info (domain)->dynamic_code_hash = g_hash_table_new (NULL, NULL);
+	ji->next = (MonoJitDynamicMethodInfo *)g_hash_table_lookup (domain_jit_info (domain)->dynamic_code_hash, method);
 	g_hash_table_insert (domain_jit_info (domain)->dynamic_code_hash, method, ji);
 }
 
@@ -1081,18 +1082,20 @@ mono_tier0_free_method (MonoDomain *domain, MonoMethod *method)
 		g_hash_table_remove (domain_jit_info (domain)->dynamic_code_hash, method);
 	mono_domain_unlock (domain);
 
-	if (!info)
-		return;
+	while (info) {
+		MonoJitDynamicMethodInfo *next = info->next;
 
-	/*
-	 * Dynamic-method JIT info is allocated separately. Table removal defers
-	 * its free until existing hazardous readers have finished with it.
-	 */
-	if (info->ji)
-		mono_jit_info_table_remove (domain, info->ji);
+		/*
+		 * Dynamic-method JIT info is allocated separately. Table removal defers
+		 * its free until existing hazardous readers have finished with it.
+		 */
+		if (info->ji)
+			mono_jit_info_table_remove (domain, info->ji);
 
-	mono_code_manager_destroy (info->code_mp);
-	g_free (info);
+		mono_code_manager_destroy (info->code_mp);
+		g_free (info);
+		info = next;
+	}
 }
 
 typedef struct {
@@ -4298,7 +4301,7 @@ mini_method_compile (MonoMethod *method, guint32 opts, MonoDomain *domain, JitFl
 		mono_jit_info_table_add (cfg->domain, cfg->jit_info);
 
 		if (cfg->method->dynamic)
-			mono_dynamic_code_hash_lookup (cfg->domain, cfg->method)->ji = cfg->jit_info;
+			cfg->dynamic_info->ji = cfg->jit_info;
 
 		mono_domain_unlock (cfg->domain);
 

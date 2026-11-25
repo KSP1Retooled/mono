@@ -555,9 +555,14 @@ set(MONO_TESTS_CS_SRC
   bug-60843.cs
   nested_type_visibility.cs
   dynamic-method-churn.cs
+  dynamic-method-code-reuse.cs
+  dynamic-method-code-root.cs
   dynamic-method-delegate.cs
+  dynamic-method-ftnptr.cs
   dynamic-method-gc-in-body.cs
   dynamic-method-gc-in-frame.cs
+  dynamic-method-info-root.cs
+  dynamic-method-invoke.cs
   verbose.cs
   generic-unmanaged-constraint.cs
   bug-10834.cs
@@ -1431,6 +1436,8 @@ set(MONO_TESTS_BOEHM_DISABLED
   thread-suspend-suspended.exe
   # this test does not run correctly under a conservative gc
   monitor-resurrection.exe
+  # Boehm does not count a code address as a reference
+  dynamic-method-code-root.exe
 )
 
 # Mono.Runtime.DumpStateTotal () is the structured crash reporter, which this
