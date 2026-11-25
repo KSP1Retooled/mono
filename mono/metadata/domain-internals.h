@@ -126,6 +126,8 @@ typedef struct {
 	 * associated with this handler.
 	 */
 	int clause_index;
+	/* For LLVM compiled code, what the landing pad is handed to enter this clause. */
+	uint32_t llvm_selector;
 	uint32_t try_offset;
 	uint32_t try_len;
 	uint32_t handler_offset;

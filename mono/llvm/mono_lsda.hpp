@@ -55,6 +55,9 @@ struct MonoLsdaEntry {
 	/// non-zero owner through the OwnerHeader a caller opts in with. Left
 	/// unset, any entry naming one is declined.
 	std::uint64_t owner = 0;
+
+	/// What the runtime hands the landing pad to enter this clause.
+	std::uint32_t selector = 0;
 };
 
 /// One thread-abort guard for a finally clause. A clause gets one guard per

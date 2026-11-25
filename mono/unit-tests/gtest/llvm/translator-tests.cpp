@@ -903,9 +903,10 @@ TEST_F (TranslatorTest, ACatchGetsALandingPadAndAPersonality)
 	EXPECT_GE (t.count ("landingpad"), 1u);
 }
 
-// The runtime resumes at the innermost pad with the chosen clause's index in the
-// selector register, so the pad has to carry the clause's marker and route on the
-// selector rather than branching straight to one handler.
+// The runtime resumes at the innermost pad with the chosen clause in the selector
+// register, so the pad has to carry the clause's marker and route on the selector
+// rather than branching straight to one handler. A clause that is not the method's
+// own goes on to the pad of whatever try the method is inlined into.
 TEST_F (TranslatorTest, APadNamesItsClausesAndRoutesBySelector)
 {
 	const Translation &t = translate ("eh", "Eh:TryCatch");
@@ -913,6 +914,7 @@ TEST_F (TranslatorTest, APadNamesItsClausesAndRoutesBySelector)
 	ASSERT_NE (t.function, nullptr) << t.error;
 	EXPECT_GE (t.count ("catch ptr @\"mono_eh_clause_0@"), 1u);
 	EXPECT_GE (t.count ("switch i32"), 1u);
+	EXPECT_GE (t.count ("resume { ptr, i32 }"), 1u);
 }
 
 // A catch nested inside another protected region can only be reached through the

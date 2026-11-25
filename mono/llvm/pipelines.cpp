@@ -32,6 +32,7 @@
 #include "passes/tier-counter.hpp"
 #include "passes/top-down-inline.hpp"
 #include "passes/trap-unreachable.hpp"
+#include "passes/unrouted-resume.hpp"
 #include "util/never-destroyed.hpp"
 #include "runtime/options.hpp"
 #include <llvm/IR/PassManager.h>
@@ -539,6 +540,9 @@ MonoPassBuilder::buildTier1Pipeline ()
 
 	MPM.addPass (MarkPastPgoHashPass ());
 
+	// Nothing behind this inlines a body that has a pad.
+	MPM.addPass (llvm::createModuleToFunctionPassAdaptor (mono::DropUnroutedResumePass ()));
+
 	// In front of the lowering below, which takes away the dispatch sites this
 	// finds.
 	if (PTO.EnablePGO && PTO.EnablePromotion)
@@ -721,6 +725,7 @@ MonoPassBuilder::buildTier2Pipeline ()
 	                                       std::move (between), *ProfileFS));
 
 	MPM.addPass (mono::StripInlineCopiesPass ());
+	MPM.addPass (llvm::createModuleToFunctionPassAdaptor (mono::DropUnroutedResumePass ()));
 
 	/*
 	 * What the two inliners left: the symbolic calls still one call each, and
@@ -829,6 +834,7 @@ MonoPassBuilder::buildTier2Pipeline ()
 
 		// Remove copies materialized by this pass.
 		MPM.addPass (mono::StripInlineCopiesPass ());
+		MPM.addPass (llvm::createModuleToFunctionPassAdaptor (mono::DropUnroutedResumePass ()));
 
 		// Lower builtins introduced while materializing allocator bodies.
 		MPM.addPass (mono::MonoBuiltinLower (mono::LowerStage::post_inline));

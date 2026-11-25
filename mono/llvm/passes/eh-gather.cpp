@@ -91,6 +91,18 @@ plant_label (MachineBasicBlock &mbb, MachineBasicBlock::iterator at, MCContext &
 	return sym;
 }
 
+/// Whether \p mi is the call a cleanup ends in.
+static bool
+resumes_unwind (const MachineInstr &mi)
+{
+	if (!mi.isCall ())
+		return false;
+
+	return llvm::any_of (mi.operands (), [] (const MachineOperand &mo) {
+		return mo.isGlobal () && mo.getGlobal ()->getName () == "mono_llvm_resume_unwind";
+	});
+}
+
 bool
 MonoEHGatherPass::doInitialization (Module &m)
 {
@@ -174,7 +186,14 @@ MonoEHGatherPass::runOnMachineFunction (MachineFunction &mf)
 			if (const DILocation *loc = it->getDebugLoc ().get ())
 				il = TryRegions::il_offset (loc);
 
-			positions.push_back ({ &mbb, it, regions.innermost (il) });
+			/*
+			 * A cleanup resumes to its own pad, or out of the frame. Left in a
+			 * region, the call's range would grow over the code beside it, or a
+			 * range beside it over the call.
+			 */
+			int region = resumes_unwind (*it) ? -1 : regions.innermost (il);
+
+			positions.push_back ({ &mbb, it, region });
 		}
 	}
 
@@ -300,7 +319,7 @@ MonoEHGatherPass::runOnMachineFunction (MachineFunction &mf)
 			if ((size_t) type_id <= type_infos.size ())
 				clause.clause_resolved = decode_clause_marker (
 					type_infos[type_id - 1], clause.clause_index,
-					clause.kind, &marker_owner);
+					clause.kind, &marker_owner, &clause.selector);
 			/*
 			 * type_info_N is a global we emit (clause_marker (),
 			 * method-to-llvm/exceptions.cpp) with a fixed, known

@@ -252,8 +252,11 @@ TopDownInlinerPass::run (Module &m, ModuleAnalysisManager &mam)
 				// Short-circuiting past clause_survives_inline () there keeps
 				// its cost off every callee but the filter one it can still
 				// affect.
-				if (has_own_clause (*callee) && !mergeable_clause_kinds_only (*callee)
-				    && clause_survives_inline (*call, *callee, simplify_, fam, get_ac)) {
+				if (has_own_clause (*callee)
+				    && (nests_in_own_clause (*call, *callee)
+				        || (!mergeable_clause_kinds_only (*callee)
+				            && clause_survives_inline (*call, *callee, simplify_, fam,
+				                                       get_ac)))) {
 					candidates->declined (
 						*root, *callee,
 						InlineCost::getNever ("its clause has nowhere to sit once inlined"),

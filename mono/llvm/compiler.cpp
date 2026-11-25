@@ -694,7 +694,7 @@ private:
 			};
 
 			streamer.emitIntValue (0x4d4c5344u, 4); /* 'MLSD' */
-			streamer.emitIntValue (4, 2);
+			streamer.emitIntValue (5, 2);
 			streamer.emitIntValue (fn.clauses.size (), 2);
 			streamer.emitValue (MCSymbolRefExpr::create (begin, ctx), 8);
 
@@ -710,6 +710,7 @@ private:
 				streamer.emitIntValue ((uint32_t) c.clause_index, 4);
 				streamer.emitIntValue ((uint32_t) c.kind, 4);
 				streamer.emitIntValue (c.owner, 8);
+				streamer.emitIntValue (c.selector, 4);
 			}
 		}
 	}

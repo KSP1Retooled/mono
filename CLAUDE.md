@@ -681,12 +681,10 @@ reached the same way as the tiering ones above:
 - `--llvm-opt=-mono-inline-clauses=<0|false|empty>` (`runtime/options.cpp`) — turn off the
   tier-2 cost model's ability to translate a clause-bearing callee at all, so it is
   refused the way the shape-test pre-pass always refuses one. On by default.
-  `clause_survives_inline ()` (`passes/top-down-inline.cpp`) is what keeps the inline safe
-  when this is on: it clones the call site, inlines the callee there and runs the same
-  simplification the round applies for real, and the cost model inlines the callee only
-  when none of its own landing pads are left standing. `mono/tests/tier2-inline-clause.cs`
-  gates both arms, reading the `MONO_INLINE_CLAUSES` environment variable the suite sets
-  alongside the flag to know which arm it is in.
+  The Inlining section says how the clauses of two methods share one table.
+  `mono/tests/tier2-inline-clause.cs` and `tier2-inline-clause-nest.cs` gate both arms,
+  reading the `MONO_INLINE_CLAUSES` environment variable the suite sets alongside the flag
+  to know which arm they are in.
 - `--llvm-opt=-mono-inline-enable-cost-benefit-analysis=<0|1>` (`passes/inline-cost.cpp`)
   — turn on the copy's cycles-against-size verdict. `finalizeAnalysis ()` asks it
   ahead of the three bonuses above: a site `costBenefitAnalysis ()` can decide, it
@@ -1211,11 +1209,18 @@ the replacements (`inlines_epoch ()`) and a body stamped with an older count nev
 the entry. `entry_point ()` then compiles the method again.
 
 `is_small_and_clause_free ()` still refuses a clause-bearing callee at the pre-pass. The
-tier-2 cost model does not: it inlines one once `clause_survives_inline ()`
-(`passes/top-down-inline.cpp`) has shown, on a clone of the call site inlined and
-simplified the way the round does for real, that none of the callee's own landing pads
-are left standing — eh-gather.cpp reads an inlined body's clauses off the root's own
-`!mono.clauses` alone, so nothing describes one that survives.
+tier-2 cost model does not. A callee's catch, finally and fault clauses merge into the
+root's table, and only a filter is refused, unless `clause_survives_inline ()`
+(`passes/inline-materialize.cpp`) shows on a clone that the clause dies.
+
+Two things make the merge safe. Each clause's marker names the method its index belongs
+to, which is what joins the table entry against the right IL header. And each clause has
+a selector of its own in the compiled body: the runtime hands the selector to the landing
+pad, which enters the clause if it is its own method's and otherwise ends in a `resume`
+that `InlineFunction` sends on to the pad of the enclosing try. `DropUnroutedResumePass`
+takes off the resumes no inline moved. A finally or fault ends in a call of
+`mono_llvm_resume_unwind ()`, and the runtime carries on from that call the way it does
+from a throw, so whatever is inlined around the call needs no wiring of its own.
 
 ### Detours
 

@@ -889,8 +889,9 @@ private:
 	llvm::Error check_delegate_invoke (MonoClass *klass);
 	void emit_clause_geometry ();
 	llvm::Constant *clause_marker (uint32_t clause);
-	llvm::Constant *resume_marker (uint32_t clause);
+	uint32_t clause_selector (uint32_t clause) const;
 	llvm::BasicBlock *handler_entry (uint32_t clause, llvm::Value *exc);
+	void emit_dispatch (MonoIrBuilder &pad, llvm::ArrayRef<uint32_t> chain);
 	llvm::BasicBlock *landing_pad (uint32_t clause);
 	void emit_resume_exit (MonoIrBuilder &builder, uint32_t clause);
 	void emit_unwinding_call (MonoIrBuilder &builder, llvm::FunctionCallee callee,

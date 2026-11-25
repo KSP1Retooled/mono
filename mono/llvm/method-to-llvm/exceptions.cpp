@@ -1,6 +1,7 @@
 #include "method-to-llvm.hpp"
 #include "hidden-return.hpp"
 #include "../mono_lsda_format.hpp"
+#include "../passes/clause-marker.hpp"
 #include "mono/metadata/class-internals.h"
 #include "mono/metadata/metadata.h"
 #include <llvm/IR/Constants.h>
@@ -195,15 +196,8 @@ MethodLLVMEmitter::emit_clause_geometry ()
 ///
 /// A landing pad's catch operands point into the object's type table, which is the
 /// one channel through which a clause's identity survives codegen. The table entry
-/// names this global, whose three words are the clause index, the clause's kind,
-/// and which method clause is one of this instance's own - the same convention
-/// jit.hpp's IlInlineRow::callee uses, so eh-gather.cpp resolves owner off the
-/// clause itself rather than off ambient code position. An inline can move an
-/// inlined body's own code under a clause of the root's that was never that
-/// body's own (innermost_try ()'s widening in eh-gather.cpp does exactly that),
-/// so nothing about where the protected code ends up answers which method a
-/// clause belongs to - only the clause's own marker does.
-/// The runtime reads them back to build the method's MonoJitInfo.
+/// names this global, which holds the clause index, the clause's kind, the method
+/// the index belongs to and the clause's selector.
 llvm::Constant *
 MethodLLVMEmitter::clause_marker (uint32_t clause)
 {
@@ -221,41 +215,26 @@ MethodLLVMEmitter::clause_marker (uint32_t clause)
 
 	llvm::Type *i32 = llvm::Type::getInt32Ty (context ());
 	llvm::Type *i64 = llvm::Type::getInt64Ty (context ());
-	llvm::StructType *triple = llvm::StructType::get (i32, i32, i64);
+	llvm::StructType *words = llvm::StructType::get (i32, i32, i64, i32);
 	llvm::Constant *value = llvm::ConstantStruct::get (
-		triple, { llvm::ConstantInt::get (i32, clause),
+		words, { llvm::ConstantInt::get (i32, clause),
 	                 llvm::ConstantInt::get (i32, clauses[clause].flags),
-	                 llvm::ConstantInt::get (i64, (uint64_t) (uintptr_t) method) });
+	                 llvm::ConstantInt::get (i64, (uint64_t) (uintptr_t) method),
+	                 llvm::ConstantInt::get (i32, clause_selector (clause)) });
 
-	return new llvm::GlobalVariable (*module, triple, /*isConstant=*/true,
+	return new llvm::GlobalVariable (*module, words, /*isConstant=*/true,
 	                                 llvm::GlobalValue::PrivateLinkage, value, name);
 }
 
-/// The global that marks the clause's resume pad in the exception tables.
+/// What the runtime hands a pad to enter the clause's handler.
 ///
-/// This uses the same channel as clause_marker, but with a different meaning. The
-/// kind word marks the pad as where control sits once the clause's cleanup has
-/// run. From then on, the runtime dispatches the enclosing clauses through this
-/// pad instead of through the try's own pad.
-llvm::Constant *
-MethodLLVMEmitter::resume_marker (uint32_t clause)
+/// Distinct for every clause in one compiled body, the inlined ones included.
+uint32_t
+MethodLLVMEmitter::clause_selector (uint32_t clause) const
 {
-	std::string name =
-		identity_symbol ("mono_eh_resume_" + std::to_string (clause), method);
-
-	if (llvm::GlobalVariable *existing = module->getNamedGlobal (name))
-		return existing;
-
-	llvm::Type *i32 = llvm::Type::getInt32Ty (context ());
-	llvm::Type *i64 = llvm::Type::getInt64Ty (context ());
-	llvm::StructType *triple = llvm::StructType::get (i32, i32, i64);
-	llvm::Constant *value = llvm::ConstantStruct::get (
-		triple, { llvm::ConstantInt::get (i32, clause),
-	                 llvm::ConstantInt::get (i32, MONO_LSDA_KIND_RESUME_PAD),
-	                 llvm::ConstantInt::get (i64, (uint64_t) (uintptr_t) method) });
-
-	return new llvm::GlobalVariable (*module, triple, /*isConstant=*/true,
-	                                 llvm::GlobalValue::PrivateLinkage, value, name);
+	return (uint32_t) function->getFnAttributeAsParsedInteger (
+		       clause_selector_attribute, 0)
+	       + clause;
 }
 
 llvm::BasicBlock *
@@ -288,22 +267,49 @@ MethodLLVMEmitter::handler_entry (uint32_t clause, llvm::Value *exc)
 	return enter;
 }
 
+/// Builds the landing pad that routes to each clause of \p chain.
+///
+/// The catch operands name every clause the switch can route to, so the object's
+/// exception table carries the whole chain for each call site. That also keeps
+/// every handler reachable and alive through optimization.
+void
+MethodLLVMEmitter::emit_dispatch (MonoIrBuilder &pad, llvm::ArrayRef<uint32_t> chain)
+{
+	llvm::LandingPadInst *caught = pad.CreateLandingPad (
+		llvm::StructType::get (llvm::PointerType::get (context (), 0),
+	                               pad.getInt32Ty ()),
+		static_cast<unsigned> (chain.size ()));
+
+	for (uint32_t j : chain)
+		caught->addClause (clause_marker (j));
+
+	llvm::Value *exc = pad.CreateExtractValue (caught, 0);
+	llvm::Value *selector = pad.CreateExtractValue (caught, 1);
+
+	// An inline into a try adds that try's clauses to this pad, and routes to
+	// them only what the pad resumes.
+	llvm::BasicBlock *elsewhere =
+		create_cold_block (pad.GetInsertBlock ()->getName () + "_outer");
+	MonoIrBuilder (elsewhere).CreateResume (caught);
+
+	llvm::SwitchInst *dispatch = pad.CreateSwitch (selector, elsewhere,
+	                                               static_cast<unsigned> (chain.size ()));
+
+	for (uint32_t j : chain)
+		dispatch->addCase (pad.getInt32 (clause_selector (j)), handler_entry (j, exc));
+}
+
 /// Where a throw inside the clause's try region lands.
 ///
 /// The pad is what every invoke in the region unwinds to. Mono's own unwinder does
 /// the two-pass search out of MonoJitInfo, picks a clause, and resumes at the
 /// innermost pad of the throw site. It hands the pad the exception and the chosen
-/// clause's index, in the two registers a landing pad reads.
+/// clause's selector, in the two registers a landing pad reads.
 ///
-/// The switch routes that entry to the chosen clause, which need not be the
-/// innermost clause. If the innermost clause's catch cannot take the exception,
-/// dispatch passes to an encloser through this same pad. Once a cleanup has run,
-/// the runtime instead reaches the enclosers through that cleanup's own resume pad
-/// (emit_resume_exit).
-///
-/// The catch operands name every clause the switch can route to, so the object's
-/// exception table carries the whole chain for each call site. That also keeps
-/// every handler reachable and alive through optimization.
+/// The chosen clause need not be the innermost one. If the innermost clause's catch
+/// cannot take the exception, dispatch passes to an encloser through this same pad.
+/// Once a cleanup has run, the runtime instead reaches the enclosers through the
+/// pad its resume call unwinds to.
 llvm::BasicBlock *
 MethodLLVMEmitter::landing_pad (uint32_t clause)
 {
@@ -320,44 +326,15 @@ MethodLLVMEmitter::landing_pad (uint32_t clause)
 	// inside the region would cost.
 	il_debug_set_location (il_scope, &pad, clauses[clause].handler_offset);
 
-	llvm::Type *exception = llvm::PointerType::get (context (), 0);
-	std::vector<uint32_t> chain = covering_chain (clause);
-	llvm::LandingPadInst *caught = pad.CreateLandingPad (
-		llvm::StructType::get (exception, pad.getInt32Ty ()),
-		static_cast<unsigned> (chain.size ()));
-
-	for (uint32_t j : chain)
-		caught->addClause (clause_marker (j));
-
-	llvm::Value *exc = pad.CreateExtractValue (caught, 0);
-	llvm::Value *selector = pad.CreateExtractValue (caught, 1);
-
-	/*
-	 * The runtime only ever enters with one of the chain's indices. Anything else
-	 * means we built the table wrongly, and there is nowhere sensible to go.
-	 */
-	llvm::BasicBlock *impossible =
-		create_cold_block (llvm::Twine ("pad") + llvm::Twine (clause) + "_bad");
-	MonoIrBuilder (impossible).CreateUnreachable ();
-
-	llvm::SwitchInst *dispatch = pad.CreateSwitch (selector, impossible,
-	                                               static_cast<unsigned> (chain.size ()));
-
-	for (uint32_t j : chain)
-		dispatch->addCase (pad.getInt32 (j), handler_entry (j, exc));
-
+	emit_dispatch (pad, covering_chain (clause));
 	return state.pad;
 }
 
 /// Hand control back to the unwinder at the end of a cleanup it entered.
 ///
-/// If nothing encloses the clause, the frame is done and a plain call suffices. If a
-/// clause encloses it, this becomes an invoke landing on a pad of this cleanup's
-/// own. From then on, the runtime dispatches the enclosers through that pad.
-///
-/// That pad is reachable only from here, which is what hands the enclosing handlers
-/// the values the cleanup wrote. Through the try's own pad, they instead get the
-/// state the throw site had, as though the cleanup never ran.
+/// The runtime carries on from this call as from a throw. So the enclosing clauses
+/// are entered with the values the cleanup wrote, and an inline into a try puts that
+/// try around this call the way it does around any other.
 void
 MethodLLVMEmitter::emit_resume_exit (MonoIrBuilder &builder, uint32_t clause)
 {
@@ -373,13 +350,6 @@ MethodLLVMEmitter::emit_resume_exit (MonoIrBuilder &builder, uint32_t clause)
 		return;
 	}
 
-	/*
-	 * This code keeps no IL offset. MonoEHGatherPass grows a clause's range
-	 * over the code whose offset lies in that clause's try region
-	 * (eh-gather.cpp). Where an endfinally sits inside an enclosing try, an
-	 * offset here puts this call under that clause as well. That is the
-	 * dispatch through the try's own pad this function avoids.
-	 */
 	llvm::BasicBlock *cont = create_cold_block ("resume_cont");
 	llvm::BasicBlock *pad_block =
 		create_cold_block (llvm::Twine ("resume_pad") + llvm::Twine (clause));
@@ -388,25 +358,8 @@ MethodLLVMEmitter::emit_resume_exit (MonoIrBuilder &builder, uint32_t clause)
 	MonoIrBuilder (cont).CreateUnreachable ();
 
 	MonoIrBuilder pad (pad_block);
-	llvm::LandingPadInst *caught = pad.CreateLandingPad (
-		llvm::StructType::get (llvm::PointerType::get (context (), 0),
-	                               pad.getInt32Ty ()),
-		1);
 
-	caught->addClause (resume_marker (clause));
-
-	llvm::Value *exc = pad.CreateExtractValue (caught, 0);
-	llvm::Value *selector = pad.CreateExtractValue (caught, 1);
-
-	llvm::BasicBlock *impossible =
-		create_cold_block (llvm::Twine ("resume_pad") + llvm::Twine (clause) + "_bad");
-	MonoIrBuilder (impossible).CreateUnreachable ();
-
-	llvm::SwitchInst *dispatch = pad.CreateSwitch (
-		selector, impossible, static_cast<unsigned> (enclosers.size ()));
-
-	for (uint32_t j : enclosers)
-		dispatch->addCase (pad.getInt32 (j), handler_entry (j, exc));
+	emit_dispatch (pad, enclosers);
 }
 
 /// Record how the clause's handler is entered, before jumping to it.

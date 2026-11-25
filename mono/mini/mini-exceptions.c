@@ -3003,13 +3003,12 @@ handle_exception_first_pass (MonoContext *ctx, MonoObject *obj, gint32 *out_filt
 
 #ifdef MONO_CONTEXT_SET_LLVM_EH_SELECTOR_REG
 					/*
-					 * Pass the original il clause index to the landing pad so it can
-					 * branch to the landing pad associated with the il clause.
-					 * This is needed because llvm compiled code assumes that the EH
-					 * code always branches to the innermost landing pad.
+					 * Tell the landing pad which clause to enter. This is needed because
+					 * llvm compiled code assumes that the EH code always branches to the
+					 * innermost landing pad.
 					 */
 					if (ji->from_llvm)
-						MONO_CONTEXT_SET_LLVM_EH_SELECTOR_REG (ctx, ei->clause_index);
+						MONO_CONTEXT_SET_LLVM_EH_SELECTOR_REG (ctx, ei->llvm_selector);
 #endif
 
 					mini_get_dbg_callbacks ()->begin_exception_filter (mono_ex, ctx, &initial_ctx);
@@ -3189,10 +3188,33 @@ resume_states_drop_below (MonoJitTlsData *jit_tls, gpointer sp)
 }
 
 /*
+ * Whether the catch clause \p catch_ei encloses the handler of clause \p running.
+ */
+static gboolean
+catch_encloses_handler (MonoJitInfo *ji, int running, MonoJitExceptionInfo *catch_ei)
+{
+	MonoJitExceptionInfo *ei = &ji->clauses [running];
+
+	if (!ji->from_llvm)
+		return is_address_protected (ji, catch_ei, ei->handler_start);
+
+	/* LLVM code lists the clauses enclosing a clause right behind it, over the same range. */
+	for (int i = running + 1; i < ji->num_clauses; ++i) {
+		MonoJitExceptionInfo *next = &ji->clauses [i];
+
+		if (next->try_start != ei->try_start || next->try_end != ei->try_end || next->handler_start != ei->handler_start)
+			break;
+		if (next->llvm_selector == catch_ei->llvm_selector)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+/*
  * Discard the states that transferring control to the catch clause \p catch_ei
  * of \p ji abandons: everything below this frame, plus any handler in this
- * frame whose code the clause protects. A catch nested inside a running
- * handler, on the other hand, returns to it, so its state stays parked.
+ * frame the clause encloses. A catch nested inside a running handler, on the
+ * other hand, returns to it, so its state stays parked.
  */
 static void
 resume_states_drop_abandoned (MonoJitTlsData *jit_tls, MonoJitInfo *ji, MonoJitExceptionInfo *catch_ei, MonoContext *ctx)
@@ -3205,7 +3227,7 @@ resume_states_drop_abandoned (MonoJitTlsData *jit_tls, MonoJitInfo *ji, MonoJitE
 		if (state->ji != ji || MONO_CONTEXT_GET_SP (&state->ctx) != MONO_CONTEXT_GET_SP (ctx))
 			break;
 		/* clause_index is the one after the clause whose handler was entered. */
-		if (!is_address_protected (ji, catch_ei, ji->clauses [state->clause_index - 1].handler_start))
+		if (!catch_encloses_handler (ji, state->clause_index - 1, catch_ei))
 			break;
 		jit_tls->resume_state_depth --;
 	}
@@ -3541,7 +3563,7 @@ mono_handle_exception_internal (MonoContext *ctx, MonoObject *obj, ResumeState *
 
 #ifdef MONO_CONTEXT_SET_LLVM_EH_SELECTOR_REG
 				if (ji->from_llvm)
-					MONO_CONTEXT_SET_LLVM_EH_SELECTOR_REG (ctx, ei->clause_index);
+					MONO_CONTEXT_SET_LLVM_EH_SELECTOR_REG (ctx, ei->llvm_selector);
 #endif
 
 				if (ei->flags == MONO_EXCEPTION_CLAUSE_FILTER) {
@@ -4248,9 +4270,17 @@ mono_resume_unwind (MonoContext *ctx)
 	if (!resume_state_pop (jit_tls, &state))
 		g_error ("Resuming an unwind with no handler state parked for it.");
 
-	MONO_CONTEXT_SET_IP (ctx, MONO_CONTEXT_GET_IP (&state.ctx));
+	/* Back onto the call, which is what the clauses around the handler protect. */
+	MONO_CONTEXT_SET_IP (ctx, (gpointer)((guint8*)MONO_CONTEXT_GET_IP (ctx) - 1));
 	MONO_CONTEXT_SET_SP (ctx, MONO_CONTEXT_GET_SP (&state.ctx));
 	new_ctx = *ctx;
+
+	/*
+	 * A clause over the whole body protects its own handler, so starting over would
+	 * enter it again. It is the last one, and what encloses it is the caller.
+	 */
+	if (!is_address_protected (state.ji, &state.ji->clauses [state.clause_index - 1], MONO_CONTEXT_GET_IP (ctx)))
+		state.clause_index = 0;
 
 	mono_handle_exception_internal (&new_ctx, state.ex_obj, &state, NULL);
 

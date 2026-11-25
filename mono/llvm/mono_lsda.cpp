@@ -8,10 +8,10 @@
  *
  *   Header (16 bytes):
  *     u32 magic   = 0x4d4c5344 ('MLSD')
- *     u16 version = 4
+ *     u16 version = 5
  *     u16 count            number of entries
  *     u64 function         where the function this describes was linked
- *   Entry[count] (28 bytes each):
+ *   Entry[count] (32 bytes each):
  *     u32 try_start_off    one protected range, [code+try_start_off, +try_len)
  *     u32 try_len
  *     u32 handler_off      landing pad = code + handler_off
@@ -25,6 +25,9 @@
  *                          clause in from elsewhere. Otherwise an inlined
  *                          body's own MonoMethod*, same convention as
  *                          jit.hpp's IlInlineRow::callee.
+ *     u32 selector         what the runtime hands the landing pad to enter the
+ *                          clause, distinct for every clause of the function,
+ *                          an inlined body's included.
  *
  * One protected region contributes one entry per clause in its chain. A marker
  * entry describes something other than a protected region.
@@ -54,8 +57,8 @@ namespace mono {
 namespace {
 
 constexpr std::uint32_t MONO_LSDA_MAGIC = 0x4d4c5344u; /* 'MLSD' */
-constexpr std::uint16_t MONO_LSDA_VERSION = 4;
-constexpr std::size_t   MONO_LSDA_ENTRY_SIZE = 28;
+constexpr std::uint16_t MONO_LSDA_VERSION = 5;
+constexpr std::size_t   MONO_LSDA_ENTRY_SIZE = 32;
 
 // A bounds-checked little-endian cursor over [start, end). A failed read
 // latches ok () to false, so a whole structure can be decoded and then tested
@@ -179,6 +182,7 @@ parse_mono_lsda (const std::uint8_t *sec, std::size_t size, const void *code,
 			e.clause_index = r.u32 ();
 			e.kind = r.u32 ();
 			e.owner = r.u64 ();
+			e.selector = r.u32 ();
 			if (!r.ok ())
 				return false; // the block runs past the section
 			out.push_back (e);
@@ -247,8 +251,7 @@ private:
  *
  * A guard entry's try range is empty, so is_address_protected () is false for
  * every PC and no dispatch walk can reach it. Without that, a handler can run
- * twice. They go last so that the array order the pass-2 resume walk depends on
- * is unchanged.
+ * twice.
  */
 static bool
 append_finally_guards (const std::vector<MonoFinallyGuard> &guards, OwnerHeaders &headers,
@@ -323,43 +326,6 @@ ranges_equal_or_disjoint (const std::vector<RangeOff> &ranges)
 	return true;
 }
 
-/// One owner's own resume_pad vector: a clause's resume trampoline is only
-/// meaningful against that owner's own clause_index space, the same reason
-/// clauses itself is looked up per owner.
-using ResumePads = std::map<std::uint64_t, std::vector<gpointer>>;
-
-/// Writes into resume_pad, at the entry's clause index, where that clause's
-/// resume trampoline unwinds to once the cleanup has run. The chaining in
-/// build_ex_info_entries () routes the rest of a chain through that pad.
-/// Returns false for an owner headers cannot answer for.
-///
-/// The caller publishes no MonoJitExceptionInfo for such an entry. Its range
-/// only covers the resume trampoline's call site, which cannot throw back into
-/// this frame.
-static bool
-record_resume_pad (const MonoLsdaEntry &e, OwnerHeaders &headers,
-                   const std::uint8_t *native_code, ResumePads &resume_pad)
-{
-	const ClauseHeader *h = headers.header_for (e.owner);
-
-	if (h == nullptr)
-		return false;
-
-	// Only a cleanup resumes. emit_endfinally () is the only caller of
-	// emit_resume_exit () (method-to-llvm/exceptions.cpp), so the flags can only
-	// be FINALLY or FAULT.
-	g_assert (h->clauses[e.clause_index].flags == MONO_EXCEPTION_CLAUSE_FINALLY ||
-	          h->clauses[e.clause_index].flags == MONO_EXCEPTION_CLAUSE_FAULT);
-
-	std::vector<gpointer> &pads = resume_pad[e.owner];
-
-	if (pads.empty ())
-		pads.resize (h->num_clauses > 0 ? h->num_clauses : 0, nullptr);
-
-	pads[e.clause_index] = (gpointer) MINI_ADDR_TO_FTNPTR (native_code + e.handler_off);
-	return true;
-}
-
 /*
  * Appends the fault clause the tier counter's pad is the handler of, if the
  * section named one. Its try range is the whole body, so an exception that
@@ -427,13 +393,6 @@ build_ex_info_entries (const std::vector<MonoLsdaEntry> &entries, OwnerHeaders &
 		return a.handler_off < b.handler_off;
 	});
 
-	// Per owner per clause, the pad its resume trampoline unwinds to once the
-	// cleanup has run. The chaining below routes the rest of a chain through
-	// it, so the runtime re-enters carrying the state the cleanup left
-	// behind. Keyed by owner as well as clause_index: two inlined bodies can
-	// each declare a clause 0, and their resume pads are not one clause's.
-	ResumePads resume_pad;
-
 	// The entries that describe a real protected region, in chain order. The
 	// markers drop out here: they say where code sits, not what it protects.
 	std::vector<MonoLsdaEntry> dispatch;
@@ -468,12 +427,6 @@ build_ex_info_entries (const std::vector<MonoLsdaEntry> &entries, OwnerHeaders &
 		// not that the IL is bad.
 		g_assert (h->num_clauses > 0 && e.clause_index < static_cast<std::uint32_t> (h->num_clauses));
 
-		if (e.kind == MONO_LSDA_KIND_RESUME_PAD) {
-			if (!record_resume_pad (e, headers, native_code, resume_pad))
-				return false;
-			continue;
-		}
-
 		// A finally handler body's PC range. Nothing writes this kind today, and
 		// the abort guard is built from the separate .mono_guards section
 		// instead. Publish nothing for it.
@@ -496,10 +449,6 @@ build_ex_info_entries (const std::vector<MonoLsdaEntry> &entries, OwnerHeaders &
 		dispatch.push_back (e);
 	}
 
-	// dispatch can be empty even though entries was not. A nested finally or
-	// fault emits its resume-pad invoke whenever it has an encloser. So a method
-	// whose calls all became nounwind still has a section, holding only markers.
-	// That is the same case as an empty section, so publish nothing.
 	if (dispatch.empty ())
 		return true;
 
@@ -513,77 +462,48 @@ build_ex_info_entries (const std::vector<MonoLsdaEntry> &entries, OwnerHeaders &
 	// enclosers. An intervening finally then runs before an enclosing catch is
 	// entered. Sibling catches share a range and a pad, so the earlier-declared
 	// catch must come first, or catch(Base) takes a throw meant for
-	// catch(Derived). Pass-2 resume continues at the running clause's slot plus
-	// one, so it reaches the enclosers innermost-first too. For try/finally C
-	// inside B inside A the published array is [C, B, A], and pass-2 runs C, B, A.
-	for (std::size_t i = 0; i < dispatch.size (); ) {
-		// One landing pad's entries for one range: a single nesting chain.
-		std::size_t end = i;
-		while (end < dispatch.size () &&
-		       dispatch[end].try_start_off == dispatch[i].try_start_off &&
-		       dispatch[end].try_len == dispatch[i].try_len &&
-		       dispatch[end].handler_off == dispatch[i].handler_off)
-			++end;
+	// catch(Derived).
+	for (const MonoLsdaEntry &e : dispatch) {
+		// Already resolved once for this owner in the loop above, which
+		// returned false on any resolution this one would fail too - so
+		// this is a cache hit, never a fresh call that can decline.
+		const ClauseHeader *h = headers.header_for (e.owner);
 
-		// A chain's clauses are reached through whichever pad control is in when
-		// the runtime gets to them. That pad's selector switch routes each clause
-		// to its handler body. The pad only moves when a cleanup runs. A finally
-		// or fault ends by invoking the resume trampoline, which unwinds to a pad
-		// of its own. A catch that did not match ran nothing, so it leaves the
-		// pad where it was.
-		gpointer cur_handler = (gpointer) MINI_ADDR_TO_FTNPTR (native_code + dispatch[i].handler_off);
+		g_assert (h != nullptr);
 
-		for (std::size_t k = i; k < end; ++k) {
-			const MonoLsdaEntry &e = dispatch[k];
-			// Already resolved once for this owner in the loop above, which
-			// returned false on any resolution this one would fail too - so
-			// this is a cache hit, never a fresh call that can decline.
-			const ClauseHeader *h = headers.header_for (e.owner);
+		const MonoExceptionClause &cl = h->clauses[e.clause_index];
 
-			g_assert (h != nullptr);
+		/*
+		 * ei.flags is joined from the method's own IL header, and the
+		 * section's kind column carries the same value. handler_start is
+		 * FTNPTR-encoded here, since the section only carries a raw offset.
+		 *
+		 * try_offset, try_len, handler_offset and handler_len stay 0 from
+		 * the memset. They are IL offsets. Only mono_llvm_match_exception ()
+		 * reads any of them, and this backend never calls it.
+		 *
+		 * The data union and exvar_offset are kind-dependent:
+		 *   - CATCH (NONE): data.catch_class is joined from the IL header.
+		 *   - FILTER: data.filter stays null. jinfo.cpp joins the compiled
+		 *     filter body once the object is linked.
+		 *   - FINALLY: data.handler_end and exvar_offset stay 0.
+		 *     append_finally_guards () appends entries carrying them.
+		 *   - FAULT: the runtime reads neither field, so 0 is correct.
+		 */
+		MonoJitExceptionInfo ei;
+		memset (&ei, 0, sizeof (ei));
+		ei.flags = cl.flags;
+		if (cl.flags == MONO_EXCEPTION_CLAUSE_NONE)
+			ei.data.catch_class = cl.data.catch_class;
+		ei.clause_index = static_cast<int> (e.clause_index);
+		ei.llvm_selector = e.selector;
+		ei.try_start = (gpointer) (native_code + e.try_start_off);
+		ei.try_end = (gpointer) (native_code + e.try_start_off + e.try_len);
+		ei.handler_start = (gpointer) MINI_ADDR_TO_FTNPTR (native_code + e.handler_off);
 
-			const MonoExceptionClause &cl = h->clauses[e.clause_index];
-
-			/*
-			 * ei.flags is joined from the method's own IL header, and the
-			 * section's kind column carries the same value. handler_start is
-			 * FTNPTR-encoded here, since the section only carries a raw offset.
-			 *
-			 * try_offset, try_len, handler_offset and handler_len stay 0 from
-			 * the memset. They are IL offsets. Only mono_llvm_match_exception ()
-			 * reads any of them, and this backend never calls it.
-			 *
-			 * The data union and exvar_offset are kind-dependent:
-			 *   - CATCH (NONE): data.catch_class is joined from the IL header.
-			 *   - FILTER: data.filter stays null. jinfo.cpp joins the compiled
-			 *     filter body once the object is linked.
-			 *   - FINALLY: data.handler_end and exvar_offset stay 0.
-			 *     append_finally_guards () appends entries carrying them.
-			 *   - FAULT: the runtime reads neither field, so 0 is correct.
-			 */
-			MonoJitExceptionInfo ei;
-			memset (&ei, 0, sizeof (ei));
-			ei.flags = cl.flags;
-			if (cl.flags == MONO_EXCEPTION_CLAUSE_NONE)
-				ei.data.catch_class = cl.data.catch_class;
-			ei.clause_index = static_cast<int> (e.clause_index);
-			ei.try_start = (gpointer) (native_code + e.try_start_off);
-			ei.try_end = (gpointer) (native_code + e.try_start_off + e.try_len);
-			ei.handler_start = cur_handler;
-
-			auto owner_pads = resume_pad.find (e.owner);
-
-			if (owner_pads != resume_pad.end ()
-			    && e.clause_index < owner_pads->second.size ()
-			    && owner_pads->second[e.clause_index])
-				cur_handler = owner_pads->second[e.clause_index];
-
-			out.push_back (ei);
-			ranges.push_back ({ static_cast<std::uint64_t> (e.try_start_off),
-			                    static_cast<std::uint64_t> (e.try_start_off) + e.try_len });
-		}
-
-		i = end;
+		out.push_back (ei);
+		ranges.push_back ({ static_cast<std::uint64_t> (e.try_start_off),
+		                    static_cast<std::uint64_t> (e.try_start_off) + e.try_len });
 	}
 
 	return ranges_equal_or_disjoint (ranges);
