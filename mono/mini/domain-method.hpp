@@ -18,6 +18,7 @@
 #include <mono/utils/mono-lock-rank.h>
 
 #include <llvm/ADT/STLFunctionalExtras.h>
+#include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Error.h>
 
@@ -176,6 +177,10 @@ public:
 	/// reach it. This is how a detour finds the bodies it has to take down.
 	void note_inlined_into (MonoMethod *root);
 
+	/// Takes back every note_inlined_into () that named this record's method,
+	/// which is about to be freed.
+	void forget_inlined ();
+
 	/// Takes the entry of every method that inlined a copy of this one in back
 	/// to its lazy resolver. The next call to one of them compiles it again,
 	/// and is_inlinable () keeps the copy out that time.
@@ -299,7 +304,10 @@ private:
 	std::atomic<bool> override_checked_ { false };
 
 	/// The methods whose compiled bodies hold a copy of this one's.
-	llvm::SmallVector<MonoMethod *, 2> inlined_into_;
+	llvm::SmallPtrSet<MonoMethod *, 2> inlined_into_;
+	/// The records that name this one's method there. Kept for a dynamic method
+	/// alone, because no other record goes before its domain.
+	llvm::SmallPtrSet<MonoDomainMethod *, 2> inlined_;
 	/// How many methods this one holds a copy of have been replaced.
 	std::atomic<uint32_t> inlines_epoch_ { 0 };
 	std::atomic<bool> past_tier0_ { false };

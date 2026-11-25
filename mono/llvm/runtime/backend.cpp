@@ -1850,8 +1850,10 @@ MonoBackend::release_method_impl (MonoMethod *method)
 
 	for (DomainState *state : states)
 		if (std::unique_ptr<MonoDomainMethod> dm =
-			    domain_method_take (state->domain, method))
+			    domain_method_take (state->domain, method)) {
+			dm->forget_inlined ();
 			going.emplace_back (state, std::move (dm));
+		}
 
 	// Removing a dylib waits on any link that is still using symbols in it, so
 	// retire () happens with the backend's own lock dropped.
