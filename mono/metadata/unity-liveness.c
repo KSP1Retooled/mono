@@ -112,6 +112,8 @@ static mono_lazy_init_t liveness_initialized = MONO_LAZY_INIT_STATUS_NOT_INITIAL
 static mono_mutex_t liveness_alloc_lock;
 
 static struct {
+	/* Whether some thread has the pool claimed. */
+	volatile gint32 claimed;
 	mono_mutex_t lock;
 	mono_cond_t wake;
 	mono_cond_t finished;
@@ -852,12 +854,21 @@ static mono_thread_start_return_t WINAPI liveness_pool_thread(gpointer arg)
 	return 0;
 }
 
-/* Runs @job on every worker of @state, workers [0] on the calling thread and
- * the rest on the pool, and returns once all of them have. */
-static void liveness_pool_run(LivenessState *state, void (*job) (LivenessWorker *worker))
+/* Claims the pool for the next liveness_run (), or returns FALSE where another
+ * thread has it. */
+static gboolean liveness_pool_try_claim(LivenessState *state)
 {
-	if (state->n_workers == 1) {
-		job(&state->workers[0]);
+	return state->n_workers > 1 && mono_atomic_cas_i32 (&liveness_pool.claimed, 1, 0) == 0;
+}
+
+/* Runs @job on every worker of @state, and returns once all of them have
+ * finished. If @pooled, workers [0] is on the calling thread and the rest are on
+ * the pool, which this releases. Otherwise the calling thread runs them in order. */
+static void liveness_run(LivenessState *state, void (*job) (LivenessWorker *worker), gboolean pooled)
+{
+	if (!pooled) {
+		for (int i = 0; i < state->n_workers; i++)
+			job(&state->workers[i]);
 		return;
 	}
 
@@ -875,6 +886,8 @@ static void liveness_pool_run(LivenessState *state, void (*job) (LivenessWorker 
 	while (liveness_pool.running)
 		mono_os_cond_wait (&liveness_pool.finished, &liveness_pool.lock);
 	mono_os_mutex_unlock (&liveness_pool.lock);
+
+	mono_atomic_store_i32 (&liveness_pool.claimed, 0);
 }
 
 /* Start the unmanaged pool before stopping the world: thread creation and a
@@ -922,16 +935,19 @@ void mono_unity_liveness_calculation_from_statics(LivenessState *liveness_state)
 
 	mono_reset_state(liveness_state);
 
+	gboolean pooled = liveness_pool_try_claim(liveness_state);
+
 	memset (&walk, 0, sizeof (walk));
 	walk.vtables = memory_manager->class_vtable_array;
 	walk.n_vtables = walk.vtables->len;
-	walk.n_workers = liveness_state->n_workers;
+	/* The walk ends once this many workers wait for work at the same time. */
+	walk.n_workers = pooled ? liveness_state->n_workers : 1;
 	mono_os_mutex_init (&walk.lock);
 	mono_os_cond_init (&walk.cond);
 	for (i = 0; i < liveness_state->n_workers; i++)
 		liveness_state->workers[i].walk = &walk;
 
-	liveness_pool_run(liveness_state, liveness_walk_run);
+	liveness_run(liveness_state, liveness_walk_run, pooled);
 
 	for (i = 0; i < liveness_state->n_workers; i++)
 		liveness_state->workers[i].walk = NULL;
@@ -1149,7 +1165,7 @@ static void liveness_clear_marks(LivenessWorker *worker)
 
 void mono_unity_liveness_finalize(LivenessState *state)
 {
-	liveness_pool_run(state, liveness_clear_marks);
+	liveness_run(state, liveness_clear_marks, liveness_pool_try_claim(state));
 }
 
 void mono_unity_liveness_free_struct(LivenessState *state)
