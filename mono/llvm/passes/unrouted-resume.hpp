@@ -10,7 +10,8 @@
 
 namespace mono {
 
-/// Turns each `resume` into `unreachable`.
+/// Replaces each `resume` in the function with `unreachable`, and simplifies the
+/// blocks that held them.
 ///
 /// A landing pad runs `resume` for a selector that belongs to none of its own
 /// method's clauses. When the method is inlined into a try, LLVM replaces that

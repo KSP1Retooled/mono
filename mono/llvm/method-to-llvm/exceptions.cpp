@@ -192,12 +192,12 @@ MethodLLVMEmitter::emit_clause_geometry ()
 	function->setMetadata ("mono.clauses", llvm::MDNode::get (context (), geometry));
 }
 
-/// The global that stands for the clause in the exception tables.
+/// Returns the global that identifies \p clause in the exception tables, and
+/// creates it on first use.
 ///
-/// A landing pad's catch operands point into the object's type table, and that
-/// table is the only place where a clause's identity survives codegen. The table
-/// entry names this global. The global holds the clause's index, its kind, the
-/// method that the index belongs to, and its selector.
+/// A landing pad names the global as a catch operand. The global holds the
+/// clause's index, its kind, the method that the index belongs to, and its
+/// selector, and the gather reads them back after codegen.
 llvm::Constant *
 MethodLLVMEmitter::clause_marker (uint32_t clause)
 {
@@ -226,7 +226,8 @@ MethodLLVMEmitter::clause_marker (uint32_t clause)
 	                                 llvm::GlobalValue::PrivateLinkage, value, name);
 }
 
-/// The value that the runtime passes to a landing pad to enter the clause's handler.
+/// Returns the selector of \p clause: the value that the runtime passes to a
+/// landing pad to enter that clause's handler.
 ///
 /// No two clauses in one compiled body have the same selector, including the
 /// clauses of inlined bodies.
@@ -268,10 +269,9 @@ MethodLLVMEmitter::handler_entry (uint32_t clause, llvm::Value *exc)
 	return enter;
 }
 
-/// Builds a landing pad that can enter the handler of each clause in \p chain.
-///
-/// The landing pad lists each clause of the chain as a catch operand, so the
-/// object's exception table describes the whole chain at each call site.
+/// Emits into \p pad a landingpad that catches every clause in \p chain, and a
+/// switch on the selector that enters the matching clause's handler. A selector
+/// that matches no clause in \p chain reaches a `resume`.
 void
 MethodLLVMEmitter::emit_dispatch (MonoIrBuilder &pad, llvm::ArrayRef<uint32_t> chain)
 {
@@ -280,6 +280,8 @@ MethodLLVMEmitter::emit_dispatch (MonoIrBuilder &pad, llvm::ArrayRef<uint32_t> c
 	                               pad.getInt32Ty ()),
 		static_cast<unsigned> (chain.size ()));
 
+	// The catch operands put the whole chain in the object's exception table at
+	// each call site that unwinds here.
 	for (uint32_t j : chain)
 		caught->addClause (clause_marker (j));
 
@@ -300,17 +302,12 @@ MethodLLVMEmitter::emit_dispatch (MonoIrBuilder &pad, llvm::ArrayRef<uint32_t> c
 		dispatch->addCase (pad.getInt32 (clause_selector (j)), handler_entry (j, exc));
 }
 
-/// Where a throw inside the clause's try region lands.
+/// Returns the landing pad that the invokes in \p clause's try region unwind to,
+/// and builds it on first use.
 ///
-/// Every invoke in the region unwinds to this pad. Mono's own unwinder does the
-/// two-pass search over MonoJitInfo, chooses a clause, and resumes at the innermost
-/// pad of the throw site. It passes the exception and the chosen clause's selector
-/// in the two registers that a landing pad reads.
-///
-/// The chosen clause can be an enclosing one. If the innermost clause's catch
-/// cannot take the exception, the runtime enters this same pad with the selector
-/// of an enclosing clause. After a finally or fault has run, the runtime instead
-/// reaches the enclosing clauses through the pad that its resume call unwinds to.
+/// The pad also enters the sibling catches of \p clause and the clauses that
+/// enclose the region. If the inner catch cannot take the exception, the runtime
+/// enters this same pad with the selector of an enclosing clause.
 llvm::BasicBlock *
 MethodLLVMEmitter::landing_pad (uint32_t clause)
 {
@@ -331,12 +328,10 @@ MethodLLVMEmitter::landing_pad (uint32_t clause)
 	return state.pad;
 }
 
-/// Hand control back to the unwinder at the end of a cleanup it entered.
-///
-/// The runtime continues the unwind from this call as if the call had thrown. So
-/// the runtime enters the enclosing clauses with the values that the cleanup wrote.
-/// When this method is inlined into a try, that try covers this call the same way
-/// that it covers any other call.
+/// Ends the handler of the finally or fault \p clause with a call to
+/// mono_llvm_resume_unwind (), which hands the unwind back to the runtime. If
+/// clauses of this method enclose \p clause, the call is an invoke whose pad
+/// enters them. Otherwise it is a plain call.
 void
 MethodLLVMEmitter::emit_resume_exit (MonoIrBuilder &builder, uint32_t clause)
 {
@@ -346,6 +341,9 @@ MethodLLVMEmitter::emit_resume_exit (MonoIrBuilder &builder, uint32_t clause)
 		if (j != clause && clause_encloses (&clauses[clause], &clauses[j]))
 			enclosers.push_back (j);
 
+	// The runtime continues the unwind from this call as if the call had thrown.
+	// So the enclosing clauses see the values that the cleanup wrote, and a try
+	// that an inline puts around a plain call covers it like any other call.
 	if (enclosers.empty ()) {
 		builder.CreateCall (resume_unwind_decl (module));
 		builder.CreateUnreachable ();
