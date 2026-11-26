@@ -6,79 +6,60 @@
  */
 #include "icalls/icalls.h"
 
+/*
+ * Each range is tested before the cast, because C leaves a cast of a value
+ * that does not fit undefined. arm64 and x86 give different results for one.
+ * A NaN fails every comparison, so it lands outside each range too. The bounds
+ * are exact in both float and double.
+ */
+#define I8_LOWER -9223372036854775808.0
+#define I8_UPPER 9223372036854775808.0
+#define U8_UPPER 18446744073709551616.0
+
+static void
+set_overflow (void)
+{
+	ERROR_DECL (error);
+	mono_error_set_overflow (error);
+	mono_error_set_pending_exception (error);
+}
+
 gint64
 mono_fconv_ovf_i8 (double v)
 {
-	const gint64 res = (gint64)v;
-
-	if (mono_isnan (v) || mono_trunc (v) != res) {
-		ERROR_DECL (error);
-		mono_error_set_overflow (error);
-		mono_error_set_pending_exception (error);
+	if (!(v >= I8_LOWER && v < I8_UPPER)) {
+		set_overflow ();
 		return 0;
 	}
-	return res;
+	return (gint64)v;
 }
 
 guint64
 mono_fconv_ovf_u8 (double v)
 {
-	guint64 res;
-
-/*
- * The soft-float implementation of some ARM devices have a buggy guin64 to double
- * conversion that it looses precision even when the integer if fully representable
- * as a double.
- *
- * This was found with 4294967295ull, converting to double and back looses one bit of precision.
- *
- * To work around this issue we test for value boundaries instead.
- */
-#if defined(__arm__) && defined(MONO_ARCH_SOFT_FLOAT_FALLBACK)
-	if (mono_isnan (v) || !(v >= -0.5 && v <= ULLONG_MAX+0.5)) {
-		ERROR_DECL (error);
-		mono_error_set_overflow (error);
-		mono_error_set_pending_exception (error);
+	if (!(v > -1.0 && v < U8_UPPER)) {
+		set_overflow ();
 		return 0;
 	}
-	res = (guint64)v;
-#else
-	res = (guint64)v;
-	if (mono_isnan (v) || mono_trunc (v) != res) {
-		ERROR_DECL (error);
-		mono_error_set_overflow (error);
-		mono_error_set_pending_exception (error);
-		return 0;
-	}
-#endif
-	return res;
+	return (guint64)v;
 }
 
 gint64
 mono_rconv_ovf_i8 (float v)
 {
-	const gint64 res = (gint64)v;
-
-	if (mono_isnan (v) || mono_trunc (v) != res) {
-		ERROR_DECL (error);
-		mono_error_set_overflow (error);
-		mono_error_set_pending_exception (error);
+	if (!(v >= (float) I8_LOWER && v < (float) I8_UPPER)) {
+		set_overflow ();
 		return 0;
 	}
-	return res;
+	return (gint64)v;
 }
 
 guint64
 mono_rconv_ovf_u8 (float v)
 {
-	guint64 res;
-
-	res = (guint64)v;
-	if (mono_isnan (v) || mono_trunc (v) != res) {
-		ERROR_DECL (error);
-		mono_error_set_overflow (error);
-		mono_error_set_pending_exception (error);
+	if (!(v > -1.0f && v < (float) U8_UPPER)) {
+		set_overflow ();
 		return 0;
 	}
-	return res;
+	return (guint64)v;
 }
