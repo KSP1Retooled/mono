@@ -31,8 +31,12 @@ tests both: `build`/`test` on Ubuntu with clang and gcc, `build-windows`/`test-w
 on `windows-2025` with `clang-cl` against a downloaded LLVM release and a vcpkg
 toolchain file. `build.md` only walks the Linux invocation; `ci.yml`'s `build-windows`
 job is the authoritative Windows one until that gap is closed. AOT and llvmonly are out
-of scope and deleted, and so are Darwin, mobile, wasm, cross builds and the netcore
-profile. The design doc is `.claude/plans/orc-direct-multitier.md`.
+of scope and deleted, and so are Darwin, mobile, wasm and the netcore profile. The
+design doc is `.claude/plans/orc-direct-multitier.md`.
+
+arm64 Linux configures too, with `MONO_HAVE_CODEGEN` off: the layers under `mono/mini`
+and the unit tests that link only those. CI runs it natively in `ci.yml`'s `arm64` job,
+and `cmake/cross/README.md` is how to cross-build it on amd64 and run it under qemu.
 
 ## Build
 

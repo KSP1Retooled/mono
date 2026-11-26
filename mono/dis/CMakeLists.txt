@@ -1,6 +1,6 @@
 # monodis, the IL disassembler.
 
-if(NOT MONO_ENABLE_EXECUTABLES OR NOT MONO_ENABLE_LIBRARIES)
+if(NOT MONO_ENABLE_EXECUTABLES)
   return()
 endif()
 

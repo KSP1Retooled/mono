@@ -1,7 +1,7 @@
 # pedump: loads an assembly through the real metadata layer and reports what
 # the verifier makes of it.  Needs SGen because it links the sgen runtime.
 
-if(NOT MONO_ENABLE_EXECUTABLES OR NOT MONO_ENABLE_LIBRARIES OR NOT MONO_ENABLE_SGEN)
+if(NOT MONO_ENABLE_EXECUTABLES OR NOT MONO_ENABLE_SGEN)
   return()
 endif()
 

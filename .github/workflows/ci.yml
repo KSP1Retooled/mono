@@ -573,6 +573,61 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # ---------------------------------------------------------------------------
+  # arm64, natively. MONO_HAVE_CODEGEN is off there, so this is the runtime's
+  # lower layers and the unit tests that link them.
+  #
+  # One job rather than a build and shards, because the whole suite is minutes.
+  # ---------------------------------------------------------------------------
+  arm64:
+    name: Build and test (arm64)
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Check out the submodules this half builds
+        run: |
+          git submodule update --init --depth 1 external/corefx
+          git submodule update --init --depth 1 --recursive external/bdwgc
+
+      - name: Install dependencies
+        uses: ./.github/actions/deps
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DMONO_LLVM_PREFIX=/usr/lib/llvm-23 \
+            -DCMAKE_INSTALL_PREFIX="$PWD/tmp"
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      # The suite registers whatever the configure left on, so a switch that
+      # turned every test off reads as a pass without --no-tests.
+      - name: Test
+        run: >
+          ctest --test-dir build -j "$(nproc)" --output-on-failure
+          --no-tests=error --output-junit junit-arm64.xml
+
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-linux-arm64
+          path: |
+            build/junit-*.xml
+            build/Testing/Temporary/LastTest*.log
+          if-no-files-found: warn
+          retention-days: 14
+
   build-windows:
     name: Build (clang-cl)
     if: >-
