@@ -24,6 +24,8 @@
  * Only System V walks the fields and counts the registers that are left.
  */
 
+#include "config.h"
+
 #include "arch/c-lowering.hpp"
 
 #include <llvm/ADT/SmallVector.h>
