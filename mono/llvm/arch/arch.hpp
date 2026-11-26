@@ -24,6 +24,8 @@
 
 #if defined(TARGET_AMD64)
 #include "arch/amd64/amd64.hpp"
+#elif defined(TARGET_ARM64)
+#include "arch/arm64/arm64.hpp"
 #else
 #error "the LLVM JIT has no arch/ directory for this target"
 #endif

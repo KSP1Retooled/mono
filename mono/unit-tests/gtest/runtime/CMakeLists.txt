@@ -77,14 +77,18 @@ endif()
 # mono-path.c's statics by including the file. Only the archive semantics of
 # the RUNTIME link let the linker leave the library's own copy of those
 # symbols out.
-mono_add_unit_test(test-mono-runtime RUNTIME SOURCES
+set(_runtime_test_sources
   harness.cpp test-mono-callspec.cpp test-mono-string.cpp test-path.cpp
   test-function-pointer.cpp test-detour.cpp test-icall.cpp
-  test-unmanaged-callers-only.cpp test-arch-amd64.cpp
+  test-unmanaged-callers-only.cpp
   test-unity-pinned-alloc.cpp test-unity-liveness.cpp test-unity-gc.cpp
   test-type-init-recursion.cpp test-tier.cpp test-eh-ranges.cpp
   test-etw-profiler.cpp test-il-analyzer.cpp test-windows-unwind-table.cpp
   test-race-entry.cpp test-sgen-gchandle.cpp)
+if(MONO_TARGET_ARCH STREQUAL "amd64")
+  list(APPEND _runtime_test_sources test-arch-amd64.cpp)
+endif()
+mono_add_unit_test(test-mono-runtime RUNTIME SOURCES ${_runtime_test_sources})
 mono_unit_test_cases(test-mono-runtime test-mono-callspec "Callspec.*")
 mono_unit_test_cases(test-mono-runtime test-mono-string   "MonoStringTest.*")
 mono_unit_test_cases(test-mono-runtime test-path          "MonoPath.*")
@@ -93,7 +97,9 @@ mono_unit_test_cases(test-mono-runtime test-detour        "MethodDetour.*")
 mono_unit_test_cases(test-mono-runtime test-icall         "NoWrapperIcall.*")
 mono_unit_test_cases(test-mono-runtime test-unmanaged-callers-only
                      "UnmanagedCallersOnly.*")
-mono_unit_test_cases(test-mono-runtime test-arch-amd64    "ArchAmd64.*")
+if(MONO_TARGET_ARCH STREQUAL "amd64")
+  mono_unit_test_cases(test-mono-runtime test-arch-amd64  "ArchAmd64.*")
+endif()
 mono_unit_test_cases(test-mono-runtime test-unity-pinned-alloc
                      "UnityPinnedAlloc.*")
 mono_unit_test_cases(test-mono-runtime test-unity-liveness "UnityLiveness.*"

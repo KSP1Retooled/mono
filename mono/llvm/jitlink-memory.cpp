@@ -52,8 +52,15 @@ constexpr size_t max_reservation = size_t (INT_MAX);
  * A port without MAP_32BIT has to solve reach some other way. Until it does, the
  * check below is what says so. The alternative is a JITLink relocation error
  * that names none of this.
+ *
+ * On arm64 the thunks and context stubs reach their targets through absolute
+ * literals.
  */
+#ifdef TARGET_AMD64
 constexpr uintptr_t code_reach_limit = uintptr_t (2) * 1024 * 1024 * 1024;
+#else
+constexpr uintptr_t code_reach_limit = UINTPTR_MAX;
+#endif
 
 } // namespace
 

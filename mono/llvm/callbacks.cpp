@@ -43,6 +43,7 @@ LazyCallbacks::create (void *on_error)
 	self->pool_ = std::move (*pool);
 	self->resolver_ = arch::take_published_resolver ();
 
+#ifdef TARGET_AMD64
 	/* The AVX resolver executes VMOVUPS before entering managed code. */
 	if (mono_hwcap_x86_has_avx) {
 		auto avx_pool = LocalTrampolinePool<arch::LazyEntryAvxABI>::Create (
@@ -57,6 +58,7 @@ LazyCallbacks::create (void *on_error)
 		self->pool_avx_ = std::move (*avx_pool);
 		self->resolver_avx_ = arch::take_published_resolver ();
 	}
+#endif
 
 	return std::move (self);
 }

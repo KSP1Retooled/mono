@@ -6,6 +6,11 @@ if(NOT MONO_ENABLE_LLVM OR NOT MONO_ENABLE_SGEN OR NOT MONO_ENABLE_LIBRARIES)
   return()
 endif()
 
+if(NOT MONO_TARGET_ARCH STREQUAL "amd64")
+  # These drive tier-1 code generation, which only amd64 has.
+  return()
+endif()
+
 # Most of the cases drive method_to_llvm () over real metadata. Each one is a
 # method in a `.il` file under il/ that ilasm assembles into an assembly the
 # test loads. The sources compile either way. A fixture with no corpus to load
