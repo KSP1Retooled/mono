@@ -1018,6 +1018,13 @@ typedef struct MonoCompile {
 	guint            self_init : 1;
 	guint            domainvar_inited : 1;
 	guint            code_exec_only : 1;
+	/*
+	 * Set when this code generator cannot place a value that this method's
+	 * signature, or the signature of a method that it calls, carries. This is
+	 * a flag rather than an exception_type, because a failed inline attempt
+	 * clears exception_type.
+	 */
+	guint            refused_signature : 1;
 	guint8           uses_simd_intrinsics;
 	int              r4_stack_type;
 	gpointer         debug_info;

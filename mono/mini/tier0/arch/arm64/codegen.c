@@ -211,6 +211,59 @@ mono_arch_regalloc_cost (MonoCompile *cfg, MonoMethodVar *vmv)
 		return 2;
 }
 
+static gboolean
+info_has_vector_leaf (const ArgInfo *ainfo)
+{
+	if (ainfo->storage != ArgVtypeInLeaves)
+		return FALSE;
+	for (int i = 0; i < ainfo->nleaves; ++i)
+		if (ainfo->leaves [i].storage == ArgInVReg || ainfo->leaves [i].size > 8)
+			return TRUE;
+	return FALSE;
+}
+
+/*
+ * Whether a value that cinfo places has a leaf wider than 8 bytes, which is a
+ * whole SIMD value. Tier 0's sources are built with DISABLE_SIMD, so this code
+ * generator has no 16-byte move. A method with such a leaf is compiled at tier
+ * 1 instead.
+ */
+static gboolean
+has_vector_leaf (const CallInfo *cinfo)
+{
+	if (info_has_vector_leaf (&cinfo->ret))
+		return TRUE;
+	for (int i = 0; i < cinfo->nargs; ++i)
+		if (info_has_vector_leaf (&cinfo->args [i]))
+			return TRUE;
+	return FALSE;
+}
+
+/* Returns the load opcode that reads a leaf's own bytes out of the value that holds it. */
+static int
+leaf_load_opcode (const ArgLeaf *leaf)
+{
+	switch (leaf->storage) {
+	case ArgInFRegR4:
+		return OP_LOADR4_MEMBASE;
+	case ArgInFReg:
+		return OP_LOADR8_MEMBASE;
+	default:
+		break;
+	}
+
+	switch (leaf->size) {
+	case 1:
+		return OP_LOADU1_MEMBASE;
+	case 2:
+		return OP_LOADU2_MEMBASE;
+	case 4:
+		return OP_LOADU4_MEMBASE;
+	default:
+		return OP_LOADI8_MEMBASE;
+	}
+}
+
 void
 mono_arch_create_vars (MonoCompile *cfg)
 {
@@ -221,6 +274,9 @@ mono_arch_create_vars (MonoCompile *cfg)
 	if (!cfg->arch.cinfo)
 		cfg->arch.cinfo = mono_arch_get_call_info (cfg->mempool, sig);
 	cinfo = cfg->arch.cinfo;
+
+	if (has_vector_leaf (cinfo))
+		cfg->refused_signature = TRUE;
 
 	if (cinfo->ret.storage == ArgVtypeByRef) {
 		cfg->vret_addr = mono_compile_create_var (cfg, mono_get_int_type (), OP_LOCAL);
@@ -332,6 +388,13 @@ mono_arch_allocate_vars (MonoCompile *cfg)
 		else
 			offset += 16;
 		break;
+	case ArgVtypeInLeaves:
+		/* A local that holds the result, which the epilog loads the leaves from */
+		cfg->ret->opcode = OP_REGOFFSET;
+		cfg->ret->inst_basereg = cfg->frame_reg;
+		cfg->ret->inst_offset = offset;
+		offset += ALIGN_TO (cinfo->ret.size, 16);
+		break;
 	case ArgVtypeByRef:
 		/* This variable will be initalized in the prolog from R8 */
 		cfg->vret_addr->opcode = OP_REGOFFSET;
@@ -390,6 +453,13 @@ mono_arch_allocate_vars (MonoCompile *cfg)
 				offset += 64;
 			else
 				offset += 16;
+			break;
+		case ArgVtypeInLeaves:
+			/* The prolog gathers the leaves into this slot */
+			ins->opcode = OP_REGOFFSET;
+			ins->inst_basereg = cfg->frame_reg;
+			ins->inst_offset = offset;
+			offset += ALIGN_TO (ainfo->size, 16);
 			break;
 		case ArgVtypeByRefOnStack: {
 			MonoInst *vtaddr;
@@ -681,9 +751,13 @@ mono_arch_emit_call (MonoCompile *cfg, MonoCallInst *call)
 
 	cinfo = mono_arch_get_call_info (cfg->mempool, sig);
 
+	if (has_vector_leaf (cinfo))
+		cfg->refused_signature = TRUE;
+
 	switch (cinfo->ret.storage) {
 	case ArgVtypeInIRegs:
 	case ArgHFA:
+	case ArgVtypeInLeaves:
 		if (MONO_IS_TAILCALL_OPCODE (call))
 			break;
 		/*
@@ -756,7 +830,8 @@ mono_arch_emit_call (MonoCompile *cfg, MonoCallInst *call)
 		case ArgVtypeByRef:
 		case ArgVtypeByRefOnStack:
 		case ArgVtypeOnStack:
-		case ArgHFA: {
+		case ArgHFA:
+		case ArgVtypeInLeaves: {
 			MonoInst *ins;
 			guint32 align;
 			guint32 size;
@@ -865,6 +940,31 @@ mono_arch_emit_outarg_vt (MonoCompile *cfg, MonoInst *ins, MonoInst *src)
 			MONO_EMIT_NEW_STORE_MEMBASE (cfg, OP_STOREI8_MEMBASE_REG, ARMREG_SP, ainfo->offset + (i * 8), load->dreg);
 		}
 		break;
+	case ArgVtypeInLeaves:
+		for (i = 0; i < ainfo->nleaves; ++i) {
+			const ArgLeaf *leaf = &ainfo->leaves [i];
+
+			/* A vector leaf has already marked the signature refused, so this
+			 * code is dropped. */
+			if (leaf->storage == ArgInVReg)
+				continue;
+
+			/* Only the leaf's own bytes are copied. A wider load could read
+			 * past the end of the value or into the next leaf. */
+			if (leaf->storage == ArgOnStack) {
+				mini_emit_memcpy (cfg, ARMREG_SP, leaf->at, src->dreg, leaf->offset,
+				                  leaf->size, 1);
+				continue;
+			}
+
+			MONO_INST_NEW (cfg, load, leaf_load_opcode (leaf));
+			load->inst_basereg = src->dreg;
+			load->inst_offset = leaf->offset;
+			load->dreg = leaf->storage == ArgInIReg ? mono_alloc_ireg (cfg) : mono_alloc_freg (cfg);
+			MONO_ADD_INS (cfg->cbb, load);
+			add_outarg_reg (cfg, call, leaf->storage, leaf->reg, load);
+		}
+		break;
 	default:
 		g_assert_not_reached ();
 		break;
@@ -916,6 +1016,12 @@ mono_arch_tailcall_supported (MonoCompile *cfg, MonoMethodSignature *caller_sig,
 
 	gboolean res = IS_SUPPORTED_TAILCALL (callee_info->stack_usage <= caller_info->stack_usage)
 		  && IS_SUPPORTED_TAILCALL (caller_info->ret.storage == callee_info->ret.storage);
+
+	/* A return placed one scalar at a time is gathered into a slot of the
+	 * caller's frame after the call, and a tail call skips that step. The
+	 * caller's leaves and the callee's leaves also need not use the same
+	 * registers. */
+	res &= IS_SUPPORTED_TAILCALL (callee_info->ret.storage != ArgVtypeInLeaves);
 
 	// FIXME Limit stack_usage to 1G. emit_ldrx / strx has 32bit limits.
 	res &= IS_SUPPORTED_TAILCALL (callee_info->stack_usage < (1 << 30));
@@ -1211,6 +1317,72 @@ emit_cond_exc (MonoCompile *cfg, guint8 *code, int opcode, const char *exc_name)
 	return code;
 }
 
+/*
+ * Stores the register that a leaf arrived in to the leaf's place in the value
+ * at basereg + offset. Only the leaf's own bytes are written, because the
+ * bytes beside it belong to other leaves.
+ */
+static guint8*
+emit_store_leaf (guint8 *code, const ArgLeaf *leaf, int basereg, int offset)
+{
+	int at = offset + leaf->offset;
+
+	switch (leaf->storage) {
+	case ArgInIReg:
+		switch (leaf->size) {
+		case 1:
+			return emit_strb (code, leaf->reg, basereg, at);
+		case 2:
+			return emit_strh (code, leaf->reg, basereg, at);
+		case 4:
+			return emit_strw (code, leaf->reg, basereg, at);
+		default:
+			return emit_strx (code, leaf->reg, basereg, at);
+		}
+	case ArgInFRegR4:
+		return emit_strfpw (code, leaf->reg, basereg, at);
+	case ArgInFReg:
+		return emit_strfpx (code, leaf->reg, basereg, at);
+	case ArgInVReg:
+		/* A vector leaf has already marked the signature refused, so this
+		 * code is dropped. */
+		return code;
+	default:
+		g_assert_not_reached ();
+		return code;
+	}
+}
+
+/* Loads a leaf's own bytes from the value at basereg + offset into the leaf's register. */
+static guint8*
+emit_load_leaf (guint8 *code, const ArgLeaf *leaf, int basereg, int offset)
+{
+	int at = offset + leaf->offset;
+
+	switch (leaf->storage) {
+	case ArgInIReg:
+		switch (leaf->size) {
+		case 1:
+			return emit_ldrb (code, leaf->reg, basereg, at);
+		case 2:
+			return emit_ldrh (code, leaf->reg, basereg, at);
+		case 4:
+			return emit_ldrw (code, leaf->reg, basereg, at);
+		default:
+			return emit_ldrx (code, leaf->reg, basereg, at);
+		}
+	case ArgInFRegR4:
+		return emit_ldrfpw (code, leaf->reg, basereg, at);
+	case ArgInFReg:
+		return emit_ldrfpx (code, leaf->reg, basereg, at);
+	case ArgInVReg:
+		return code;
+	default:
+		g_assert_not_reached ();
+		return code;
+	}
+}
+
 static guint8*
 emit_move_return_value (MonoCompile *cfg, guint8 * code, MonoInst *ins)
 {
@@ -1264,6 +1436,16 @@ emit_move_return_value (MonoCompile *cfg, guint8 * code, MonoInst *ins)
 			else
 				arm_strfpx (code, cinfo->ret.reg + i, ARMREG_LR, cinfo->ret.foffsets [i]);
 		}
+		break;
+	}
+	case ArgVtypeInLeaves: {
+		MonoInst *loc = cfg->arch.vret_addr_loc;
+
+		/* Load the destination address */
+		g_assert (loc && loc->opcode == OP_REGOFFSET);
+		code = emit_ldrx (code, ARMREG_LR, loc->inst_basereg, loc->inst_offset);
+		for (int i = 0; i < cinfo->ret.nleaves; ++i)
+			code = emit_store_leaf (code, &cinfo->ret.leaves [i], ARMREG_LR, 0);
 		break;
 	}
 	case ArgVtypeByRef:
@@ -1337,6 +1519,11 @@ mono_arch_output_basic_block (MonoCompile *cfg, MonoBasicBlock *bb)
 		guint offset = code - cfg->native_code;
 		set_code_cursor (cfg, code);
 		max_len = ins_get_size (ins->opcode);
+		/* Storing the returned leaves after the call takes up to three
+		 * instructions for each leaf. */
+		if (MONO_IS_CALL (ins) && ((MonoCallInst *) ins)->call_info
+		    && ((CallInfo *) ((MonoCallInst *) ins)->call_info)->ret.storage == ArgVtypeInLeaves)
+			max_len += ((CallInfo *) ((MonoCallInst *) ins)->call_info)->ret.nleaves * 3 * 4;
 		code = realloc_code (cfg, max_len);
 
 		if (G_UNLIKELY (cfg->arch.cond_branch_islands && offset - start_offset > 4 * 0x1ffff)) {
@@ -2926,6 +3113,25 @@ emit_move_args (MonoCompile *cfg, guint8 *code)
 						code = emit_strfpx (code, ainfo->reg + part, ins->inst_basereg, ins->inst_offset + ainfo->foffsets [part]);
 				}
 				break;
+			case ArgVtypeInLeaves:
+				for (part = 0; part < ainfo->nleaves; part ++) {
+					const ArgLeaf *leaf = &ainfo->leaves [part];
+
+					if (leaf->storage != ArgOnStack) {
+						code = emit_store_leaf (code, leaf, ins->inst_basereg, ins->inst_offset);
+						continue;
+					}
+
+					/* A leaf on the stack is copied out of the caller's
+					 * argument area through ip1. */
+					ArgLeaf through = *leaf;
+
+					through.storage = ArgInIReg;
+					through.reg = ARMREG_IP1;
+					code = emit_load_leaf (code, &through, cfg->arch.args_reg, leaf->at - leaf->offset);
+					code = emit_store_leaf (code, &through, ins->inst_basereg, ins->inst_offset);
+				}
+				break;
 			default:
 				g_assert_not_reached ();
 				break;
@@ -3081,6 +3287,11 @@ mono_arch_emit_prolog (MonoCompile *cfg)
 
 	sig = mono_method_signature_internal (method);
 	cfg->code_size = 256 + sig->param_count * 64;
+	/* A leaf on the stack is copied with a load and a store of up to three
+	 * instructions each. */
+	for (int arg = 0; arg < cfg->arch.cinfo->nargs; ++arg)
+		if (cfg->arch.cinfo->args [arg].storage == ArgVtypeInLeaves)
+			cfg->code_size += cfg->arch.cinfo->args [arg].nleaves * 6 * 4;
 	code = cfg->native_code = g_malloc (cfg->code_size);
 
 	/* This can be unaligned */
@@ -3216,6 +3427,10 @@ mono_arch_emit_epilog (MonoCompile *cfg)
 	int i;
 
 	max_epilog_size = 16 + 20*4;
+	cinfo = cfg->arch.cinfo;
+	/* Each leaf is a load of up to three instructions. */
+	if (cinfo->ret.storage == ArgVtypeInLeaves)
+		max_epilog_size += cinfo->ret.nleaves * 3 * 4;
 	code = realloc_code (cfg, max_epilog_size);
 
 	if (cfg->method->save_lmf) {
@@ -3246,6 +3461,15 @@ mono_arch_emit_epilog (MonoCompile *cfg)
 				code = emit_ldrfpx (code, cinfo->ret.reg + i, ins->inst_basereg, ins->inst_offset + cinfo->ret.foffsets [i]);
 		}
 		mono_emit_unwind_op_epilog_nop(cfg, code, cinfo->ret.nregs);
+		break;
+	}
+	case ArgVtypeInLeaves: {
+		MonoInst *ins = cfg->ret;
+		guint8 *start = code;
+
+		for (i = 0; i < cinfo->ret.nleaves; ++i)
+			code = emit_load_leaf (code, &cinfo->ret.leaves [i], ins->inst_basereg, ins->inst_offset);
+		mono_emit_unwind_op_epilog_nop(cfg, code, (code - start) / 4);
 		break;
 	}
 	default:

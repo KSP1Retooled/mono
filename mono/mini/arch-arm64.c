@@ -21,6 +21,7 @@
 #include <config.h>
 
 #include "mini.h"
+#include "managed-leaves.h"
 #include "aot-runtime.h"
 #include "mini-runtime.h"
 #include "mini-arm64-emit.h"
@@ -706,8 +707,109 @@ add_valuetype (CallInfo *cinfo, ArgInfo *ainfo, MonoType *t)
 	}
 }
 
+/*
+ * The managed calling convention for a value type.
+ *
+ * A managed struct does not travel as AAPCS64 places a composite. It travels
+ * as the scalars that it is made of, each placed on its own. Each scalar takes
+ * the next free register of its file, x0-x7 or v0-v7. Once a file runs out,
+ * the scalar takes a stack slot of its own: 8 bytes, or 16 bytes for a SIMD
+ * value. A return takes x0-x7 and v0-v7 the same way. When one of its scalars
+ * does not fit, the whole return comes back through a pointer in x8.
+ *
+ * A pinvoke signature keeps the AAPCS64 classification.
+ */
 static void
-add_param (CallInfo *cinfo, ArgInfo *ainfo, MonoType *t)
+add_managed_valuetype (CallInfo *cinfo, ArgInfo *ainfo, MonoType *t, gboolean is_return,
+                       ArgLeaf **pool)
+{
+	MonoClass *klass = mono_class_from_mono_type_internal (t);
+	GArray *leaves = g_array_new (FALSE, TRUE, sizeof (ManagedLeaf));
+	int extent = mono_class_value_size (klass, NULL);
+	int gr = 0, fr = 0;
+	guint i;
+
+	mono_collect_managed_leaves (t, 0, leaves);
+
+	for (i = 0; i < leaves->len; ++i) {
+		const ManagedLeaf *leaf = &g_array_index (leaves, ManagedLeaf, i);
+
+		extent = MAX (extent, leaf->offset + leaf->size);
+	}
+
+	ainfo->storage = ArgVtypeInLeaves;
+	ainfo->leaves = *pool;
+	ainfo->nleaves = leaves->len;
+	ainfo->size = ALIGN_TO (extent, 8);
+	*pool += leaves->len;
+
+	for (i = 0; i < leaves->len; ++i) {
+		const ManagedLeaf *leaf = &g_array_index (leaves, ManagedLeaf, i);
+		ArgLeaf *out = &ainfo->leaves [i];
+		int *next_fr = is_return ? &fr : &cinfo->fr;
+		int *next_gr = is_return ? &gr : &cinfo->gr;
+
+		out->offset = leaf->offset;
+		out->size = leaf->size;
+		out->at = 0;
+		out->reg = 0;
+
+		if (leaf->sse && *next_fr < FP_PARAM_REGS) {
+			out->storage = leaf->vector ? ArgInVReg
+			               : leaf->size <= 4 ? ArgInFRegR4 : ArgInFReg;
+			out->reg = (*next_fr)++;
+		} else if (!leaf->sse && *next_gr < PARAM_REGS) {
+			out->storage = ArgInIReg;
+			out->reg = (*next_gr)++;
+		} else if (is_return) {
+			/* A return whose scalars do not all fit in the return registers
+			 * comes back through a pointer that the caller passes. */
+			ainfo->storage = ArgVtypeByRef;
+			ainfo->leaves = NULL;
+			ainfo->nleaves = 0;
+			break;
+		} else {
+			/* A spilled SIMD leaf keeps its 16-byte alignment on the stack. */
+			int slot = leaf->vector ? 16 : 8;
+
+			cinfo->stack_usage = ALIGN_TO (cinfo->stack_usage, slot);
+			out->storage = ArgOnStack;
+			out->at = cinfo->stack_usage;
+			cinfo->stack_usage += slot;
+		}
+	}
+
+	g_array_free (leaves, TRUE);
+}
+
+/*
+ * Returns an upper bound on the number of scalars that t is placed as in sig.
+ * The bound is t's size, because a managed value type has at most one scalar
+ * per byte.
+ */
+static int
+arg_leaf_bound_for (MonoMethodSignature *sig, MonoType *t)
+{
+	if (sig->pinvoke || mini_is_gsharedvt_variable_type (t))
+		return 0;
+	if (!MONO_TYPE_ISSTRUCT (t) && t->type != MONO_TYPE_TYPEDBYREF)
+		return 0;
+	return mono_class_value_size (mono_class_from_mono_type_internal (t), NULL);
+}
+
+static int
+arg_leaf_bound (MonoMethodSignature *sig)
+{
+	int bound = arg_leaf_bound_for (sig, mini_get_underlying_type (sig->ret));
+
+	for (int i = 0; i < sig->param_count; ++i)
+		bound += arg_leaf_bound_for (sig, mini_get_underlying_type (sig->params [i]));
+
+	return bound;
+}
+
+static void
+add_param (CallInfo *cinfo, ArgInfo *ainfo, MonoType *t, gboolean is_return, ArgLeaf **pool)
 {
 	MonoType *ptype;
 
@@ -748,7 +850,10 @@ add_param (CallInfo *cinfo, ArgInfo *ainfo, MonoType *t)
 		break;
 	case MONO_TYPE_VALUETYPE:
 	case MONO_TYPE_TYPEDBYREF:
-		add_valuetype (cinfo, ainfo, ptype);
+		if (cinfo->pinvoke)
+			add_valuetype (cinfo, ainfo, ptype);
+		else
+			add_managed_valuetype (cinfo, ainfo, ptype, is_return, pool);
 		break;
 	case MONO_TYPE_VOID:
 		ainfo->storage = ArgNone;
@@ -762,8 +867,10 @@ add_param (CallInfo *cinfo, ArgInfo *ainfo, MonoType *t)
 			 */
 			ainfo->storage = ArgVtypeByRef;
 			ainfo->gsharedvt = TRUE;
-		} else {
+		} else if (cinfo->pinvoke) {
 			add_valuetype (cinfo, ainfo, ptype);
+		} else {
+			add_managed_valuetype (cinfo, ainfo, ptype, is_return, pool);
 		}
 		break;
 	case MONO_TYPE_VAR:
@@ -788,20 +895,26 @@ get_call_info (MonoMemPool *mp, MonoMethodSignature *sig)
 {
 	CallInfo *cinfo;
 	ArgInfo *ainfo;
+	ArgLeaf *pool;
 	int n, pstart, pindex;
+	size_t args_end;
 
 	n = sig->hasthis + sig->param_count;
+	args_end = sizeof (CallInfo) + (sizeof (ArgInfo) * n);
+	args_end = ALIGN_TO (args_end, sizeof (gpointer));
 
+	/* The leaves that the value types are placed as live in the same block, after the arguments. */
 	if (mp)
-		cinfo = mono_mempool_alloc0 (mp, sizeof (CallInfo) + (sizeof (ArgInfo) * n));
+		cinfo = mono_mempool_alloc0 (mp, args_end + (sizeof (ArgLeaf) * arg_leaf_bound (sig)));
 	else
-		cinfo = g_malloc0 (sizeof (CallInfo) + (sizeof (ArgInfo) * n));
+		cinfo = g_malloc0 (args_end + (sizeof (ArgLeaf) * arg_leaf_bound (sig)));
+	pool = (ArgLeaf *)((char *)cinfo + args_end);
 
 	cinfo->nargs = n;
 	cinfo->pinvoke = sig->pinvoke;
 
 	/* Return value */
-	add_param (cinfo, &cinfo->ret, sig->ret);
+	add_param (cinfo, &cinfo->ret, sig->ret, TRUE, &pool);
 	if (cinfo->ret.storage == ArgVtypeByRef)
 		cinfo->ret.reg = ARMREG_R8;
 	/* Reset state */
@@ -822,10 +935,10 @@ get_call_info (MonoMemPool *mp, MonoMethodSignature *sig)
 			cinfo->gr = PARAM_REGS;
 			cinfo->fr = FP_PARAM_REGS;
 			/* Emit the signature cookie just before the implicit arguments */
-			add_param (cinfo, &cinfo->sig_cookie, mono_get_int_type ());
+			add_param (cinfo, &cinfo->sig_cookie, mono_get_int_type (), FALSE, &pool);
 		}
 
-		add_param (cinfo, ainfo, sig->params [pindex]);
+		add_param (cinfo, ainfo, sig->params [pindex], FALSE, &pool);
 		if (ainfo->storage == ArgVtypeByRef) {
 			/* Pass the argument address in the next register */
 			if (cinfo->gr >= PARAM_REGS) {
@@ -847,7 +960,7 @@ get_call_info (MonoMemPool *mp, MonoMethodSignature *sig)
 		cinfo->gr = PARAM_REGS;
 		cinfo->fr = FP_PARAM_REGS;
 		/* Emit the signature cookie just before the implicit arguments */
-		add_param (cinfo, &cinfo->sig_cookie, mono_get_int_type ());
+		add_param (cinfo, &cinfo->sig_cookie, mono_get_int_type (), FALSE, &pool);
 	}
 
 	cinfo->stack_usage = ALIGN_TO (cinfo->stack_usage, MONO_ARCH_FRAME_ALIGNMENT);

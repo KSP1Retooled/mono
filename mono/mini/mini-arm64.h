@@ -133,12 +133,37 @@ typedef enum {
 	ArgVtypeByRefOnStack,
 	ArgVtypeOnStack,
 	ArgHFA,
+	/*
+	 * A managed value type, placed one scalar at a time the way LLVM places a
+	 * first-class struct. ainfo->leaves says where each scalar goes, and
+	 * ainfo->size is the size of the local slot that holds the value.
+	 */
+	ArgVtypeInLeaves,
+	/* Only in an ArgLeaf: a whole SIMD value in a q register */
+	ArgInVReg,
 	ArgNone
 } ArgStorage;
+
+/*
+ * One scalar of a managed value type, and where the convention puts it.
+ */
+typedef struct {
+	/* ArgInIReg, ArgInFReg, ArgInFRegR4, ArgInVReg or ArgOnStack */
+	ArgStorage storage;
+	int reg;
+	/* The outgoing stack offset, when storage is ArgOnStack */
+	int at;
+	/* Where the scalar sits inside the value, and how many bytes it is */
+	int offset;
+	int size;
+} ArgLeaf;
 
 typedef struct {
 	ArgStorage storage;
 	int reg;
+	/* ArgVtypeInLeaves */
+	ArgLeaf *leaves;
+	int nleaves;
 	/* ArgOnStack */
 	int offset;
 	/* ArgVtypeInIRegs/ArgHFA */

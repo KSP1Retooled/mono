@@ -26,11 +26,16 @@ mono_arm_gsharedvt_init (void)
 gboolean
 mono_arch_gsharedvt_sig_supported (MonoMethodSignature *sig)
 {
-	/*
-	if (sig->ret && is_variable_size (sig->ret))
-		return FALSE;
-	*/
-	return TRUE;
+	CallInfo *cinfo = mono_arch_get_call_info (NULL, sig);
+	gboolean supported = cinfo->ret.storage != ArgVtypeInLeaves;
+
+	/* The slot map below moves whole registers into 8-byte slots, so it
+	 * cannot describe a value that is placed one scalar at a time. */
+	for (int i = 0; supported && i < cinfo->nargs; ++i)
+		supported = cinfo->args [i].storage != ArgVtypeInLeaves;
+
+	g_free (cinfo);
+	return supported;
 }
 
 static void
