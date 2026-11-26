@@ -499,14 +499,17 @@ emit_managed_allocator_ilgen (MonoMethodBuilder *mb, gboolean slowpath, gboolean
 	} else {
 		g_assert_not_reached ();
 	}
-	mono_mb_emit_stloc (mb, p_var);
+	/* The icall returns an object, which the classic compiler does not store
+	 * into a native int local such as p_var. */
+	int ret_var = mono_mb_add_local (mb, mono_get_object_type ());
+	mono_mb_emit_stloc (mb, ret_var);
 
 	/* if (ret == NULL) throw OOM; */
-	mono_mb_emit_ldloc (mb, p_var);
+	mono_mb_emit_ldloc (mb, ret_var);
 	oom_branch [oom_branches++] = mono_mb_emit_branch (mb, CEE_BRFALSE);
 
 	/* The icall raises the allocation event itself, so this return skips the profiler tail. */
-	mono_mb_emit_ldloc (mb, p_var);
+	mono_mb_emit_ldloc (mb, ret_var);
 	mono_mb_emit_byte (mb, CEE_RET);
 
 	if (atype == ATYPE_VECTOR) {
