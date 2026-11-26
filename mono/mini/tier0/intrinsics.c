@@ -920,6 +920,16 @@ mini_emit_inst_for_method (MonoCompile *cfg, MonoMethod *cmethod, MonoMethodSign
 		}
 	}
 
+	/* Required regardless of MONO_OPT_INTRINS: Get/SetGenericValueImpl are
+	 * InternalCall with no icall registered, so this intrinsic is their whole
+	 * implementation. */
+	if (cmethod->klass == mono_defaults.array_class && fsig->param_count + fsig->hasthis == 3 && !cfg->gsharedvt) {
+		if (strcmp (cmethod->name, "GetGenericValueImpl") == 0)
+			return emit_array_generic_access (cfg, fsig, args, FALSE);
+		if (strcmp (cmethod->name, "SetGenericValueImpl") == 0)
+			return emit_array_generic_access (cfg, fsig, args, TRUE);
+	}
+
 	/* Required regardless of MONO_OPT_INTRINS: Debugger.Break () has an empty
 	 * body, so this intrinsic is its whole implementation. */
 	if (in_corlib &&
@@ -974,11 +984,7 @@ mini_emit_inst_for_method (MonoCompile *cfg, MonoMethod *cmethod, MonoMethodSign
 		} else
 			return NULL;
 	} else if (cmethod->klass == mono_defaults.array_class) {
-		if (fsig->param_count + fsig->hasthis == 3 && !cfg->gsharedvt && strcmp (cmethod->name, "GetGenericValueImpl") == 0)
-			return emit_array_generic_access (cfg, fsig, args, FALSE);
-		else if (fsig->param_count + fsig->hasthis == 3 && !cfg->gsharedvt && strcmp (cmethod->name, "SetGenericValueImpl") == 0)
-			return emit_array_generic_access (cfg, fsig, args, TRUE);
-		else if (!strcmp (cmethod->name, "GetRawSzArrayData") || !strcmp (cmethod->name, "GetRawArrayData")) {
+		if (!strcmp (cmethod->name, "GetRawSzArrayData") || !strcmp (cmethod->name, "GetRawArrayData")) {
 			int dreg = alloc_preg (cfg);
 			EMIT_NEW_BIALU_IMM (cfg, ins, OP_PADD_IMM, dreg, args [0]->dreg, MONO_STRUCT_OFFSET (MonoArray, vector));
 			return ins;

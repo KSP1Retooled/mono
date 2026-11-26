@@ -3497,6 +3497,18 @@ mono_tier0_register_opcode_emulations (void)
 	mini_register_opcode_emulation (OP_ICONV_TO_R_UN, &mono_get_jit_icall_info ()->__emul_iconv_to_r_un,
 		"__emul_iconv_to_r_un", mono_icall_sig_double_int32, (gpointer)mono_conv_to_r8_un, "mono_conv_to_r8_un", FALSE);
 #endif
+#ifdef MONO_ARCH_EMULATE_LONG_MUL_OVF_OPTS
+	mini_register_opcode_emulation (OP_LMUL_OVF_UN, &mono_get_jit_icall_info ()->__emul_lmul_ovf_un,
+		"__emul_lmul_ovf_un", mono_icall_sig_long_long_long, (gpointer)mono_llmult_ovf_un, "mono_llmult_ovf_un", FALSE);
+	mini_register_opcode_emulation (OP_LMUL_OVF, &mono_get_jit_icall_info ()->__emul_lmul_ovf,
+		"__emul_lmul_ovf", mono_icall_sig_long_long_long, (gpointer)mono_llmult_ovf, "mono_llmult_ovf", FALSE);
+#endif
+#ifdef MONO_ARCH_EMULATE_MUL_OVF
+	mini_register_opcode_emulation (OP_IMUL_OVF, &mono_get_jit_icall_info ()->__emul_op_imul_ovf,
+		"__emul_op_imul_ovf", mono_icall_sig_int32_int32_int32, (gpointer)mono_imul_ovf, "mono_imul_ovf", FALSE);
+	mini_register_opcode_emulation (OP_IMUL_OVF_UN, &mono_get_jit_icall_info ()->__emul_op_imul_ovf_un,
+		"__emul_op_imul_ovf_un", mono_icall_sig_int32_int32_int32, (gpointer)mono_imul_ovf_un, "mono_imul_ovf_un", FALSE);
+#endif
 	mini_register_opcode_emulation (OP_FREM, &mono_get_jit_icall_info ()->__emul_frem,
 		"__emul_frem", mono_icall_sig_double_double_double, (gpointer)mono_fmod, "mono_fmod", FALSE);
 	mini_register_opcode_emulation (OP_RREM, &mono_get_jit_icall_info ()->__emul_rrem,

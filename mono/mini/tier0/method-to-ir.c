@@ -11048,6 +11048,34 @@ mono_ldptr:
 			inline_costs += CALL_COST * MIN(10, num_calls++);
 			break;
 
+		case MONO_CEE_MONO_LDPTR_CRITICAL_REGION_WAIT_FLAG:
+			g_assert (method->wrapper_type != MONO_WRAPPER_NONE);
+			EMIT_NEW_PCONST (cfg, ins, &mono_threads_critical_region_wait_requested);
+			*sp++ = ins;
+			break;
+
+		case MONO_CEE_MONO_THROW_BUILTIN: {
+			/* The operand is a corlib type-def token, less the table bits. */
+			MonoInst *iargs [1];
+
+			g_assert (method->wrapper_type != MONO_WRAPPER_NONE);
+			EMIT_NEW_ICONST (cfg, iargs [0], MONO_TOKEN_TYPE_DEF | n);
+			ins = mono_emit_jit_icall (cfg, mono_create_corlib_exception_0, iargs);
+			int exc_reg = ins->dreg;
+
+			MONO_INST_NEW (cfg, ins, OP_THROW);
+			ins->sreg1 = exc_reg;
+			cfg->cbb->out_of_line = TRUE;
+			MONO_ADD_INS (cfg->cbb, ins);
+			MONO_INST_NEW (cfg, ins, OP_NOT_REACHED);
+			MONO_ADD_INS (cfg->cbb, ins);
+			sp = stack_start;
+
+			link_bblock (cfg, cfg->cbb, end_bblock);
+			start_new_bblock = 1;
+			break;
+		}
+
 		case MONO_CEE_MONO_LDPTR: {
 			gpointer ptr;
 
