@@ -100,7 +100,7 @@ mono_llvm_jit_init (void)
 	// Unity sets its embedding host name before initializing the JIT, and
 	// receives this through the log handler it installs.
 	if (mono_unity_is_embedded ())
-		g_log (G_LOG_DOMAIN, G_LOG_LEVEL_INFO, "Mono LLVM JIT -- Phantomical/mono#%s",
+		g_log (G_LOG_DOMAIN, G_LOG_LEVEL_INFO, "Mono LLVM JIT -- KSP1Retooled/mono#%s",
 		       build_shorthash ());
 
 	// mini_init () reads mono_llvm_jit_tier0_enabled () right after this
