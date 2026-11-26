@@ -51,6 +51,7 @@
 #include "mono/metadata/domain-internals.h"
 #include "mono/metadata/gc-internals.h"
 #include "mono/metadata/marshal.h"
+#include "mono/metadata/object-internals.h"
 #include "mono/utils/mono-threads-api.h"
 #include <chrono>
 #include <condition_variable>
@@ -627,6 +628,27 @@ MonoBackend::compile_entry (DomainState &domain, MonoDomainMethod &dm)
 		if (code)
 			return *code;
 
+		/*
+		 * Tier 0 can fail with an exception object already built, which a
+		 * raising body has no way to hold. The resolver throws it as a pending
+		 * exception instead of entering the landing.
+		 */
+		if constexpr (!arch::has_tier1_codegen) {
+			ERROR_DECL (failure);
+			llvm::Error error = code.takeError ();
+
+			if (error.isA<RuntimeError> ())
+				llvm::handleAllErrors (std::move (error), [&] (RuntimeError &runtime) {
+					runtime.move_to (failure);
+				});
+			else
+				mono_error_set_execution_engine (failure, "%s",
+				                                 llvm::toString (std::move (error)).c_str ());
+
+			mono_error_set_pending_exception (failure);
+			return (void *) &lazy_compile_failed;
+		}
+
 		/* Turn an uncompileable entry into a body that raises on the next call. */
 		auto note = [] (const CompiledMethod &, MonoJitInfo *) {};
 		llvm::Expected<Compiled> raising =
@@ -716,6 +738,13 @@ MonoBackend::attach_interop (MonoDomainMethod &dm)
 
 	if (!is_exposed_to_native_code (method))
 		return llvm::Error::success ();
+
+	/* Without tier 1 the body is classic's, which native code enters
+	 * directly. */
+	if constexpr (!arch::has_tier1_codegen) {
+		dm.set_interop_entry (dm.thunk.code ());
+		return llvm::Error::success ();
+	}
 
 	llvm::Expected<MonoBackend *> backend = get ();
 
@@ -1263,11 +1292,19 @@ llvm::Expected<MonoBackend::Compiled>
 MonoBackend::compile_body (DomainState &domain, MonoDomainMethod &dm, bool allow_tier0,
                            MonoTier tier, bool for_sharing)
 {
-	if (allow_tier0) {
+	if (allow_tier0 || !arch::has_tier1_codegen) {
 		llvm::Expected<Compiled> tier0 = tier0_entry (domain, dm);
 
 		if (tier0)
 			return *tier0;
+
+		/*
+		 * A method with no IL of its own continues below to the wrapper mini
+		 * builds for it, and tier 0 compiles that wrapper.
+		 */
+		if constexpr (!arch::has_tier1_codegen)
+			if (!is_external_method (dm.method))
+				return tier0.takeError ();
 
 		/*
 		 * Tier 0 refusing the method is not a failure: the method gets
