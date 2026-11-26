@@ -20,7 +20,9 @@
 #include <llvm/Support/Error.h>
 #include <llvm/Support/raw_ostream.h>
 
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include "version.h"
 
@@ -77,6 +79,16 @@ finish (llvm::Expected<void *> code, MonoError *error)
 void
 mono_llvm_jit_init (void)
 {
+	// Without a usable stderr, as in a GUI player, every write to errs () fails,
+	// and the stream's destructor then exits the process with status 1. That
+	// destructor runs when a host unloads this library. A handler registered
+	// after errs () is constructed runs before it.
+	static std::once_flag clear_errs_at_exit;
+	std::call_once (clear_errs_at_exit, [] {
+		llvm::errs ();
+		std::atexit ([] { llvm::errs ().clear_error (); });
+	});
+
 	// Unity sets its embedding host name before initializing the JIT.
 	if (mono_unity_is_embedded ())
 		llvm::errs () << "Mono LLVM JIT -- Phantomical/mono#" << build_shorthash () << "\n";
