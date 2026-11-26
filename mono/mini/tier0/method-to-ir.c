@@ -11055,7 +11055,8 @@ mono_ldptr:
 			break;
 
 		case MONO_CEE_MONO_THROW_BUILTIN: {
-			/* The operand is a corlib type-def token, less the table bits. */
+			/* The operand is the row number of a corlib type definition. It
+			 * does not include the table bits of a token. */
 			MonoInst *iargs [1];
 
 			g_assert (method->wrapper_type != MONO_WRAPPER_NONE);

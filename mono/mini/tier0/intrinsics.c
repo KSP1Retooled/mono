@@ -921,8 +921,8 @@ mini_emit_inst_for_method (MonoCompile *cfg, MonoMethod *cmethod, MonoMethodSign
 	}
 
 	/* Required regardless of MONO_OPT_INTRINS: Get/SetGenericValueImpl are
-	 * InternalCall with no icall registered, so this intrinsic is their whole
-	 * implementation. */
+	 * InternalCalls that have no registered icall, so this intrinsic is their
+	 * whole implementation. */
 	if (cmethod->klass == mono_defaults.array_class && fsig->param_count + fsig->hasthis == 3 && !cfg->gsharedvt) {
 		if (strcmp (cmethod->name, "GetGenericValueImpl") == 0)
 			return emit_array_generic_access (cfg, fsig, args, FALSE);

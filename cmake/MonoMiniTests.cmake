@@ -105,7 +105,7 @@ add_test(NAME "mini-regression/xdomain"
          WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 set_tests_properties("mini-regression/xdomain" PROPERTIES LABELS regression)
 
-# Everything below needs a compiled tier.
+# Every test below needs a compiled tier.
 if(NOT MONO_HAVE_TIER1)
   return()
 endif()

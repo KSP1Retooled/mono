@@ -1,6 +1,6 @@
 /**
  * \file
- * \brief The LMF: the shape of a managed-to-native transition on this machine.
+ * \brief The LMF that marks a managed-to-native transition on arm64.
  */
 
 /*
@@ -29,10 +29,10 @@
 
 namespace mono::arch {
 
-/// The frame the re-entry resolver reserves stack for. The LMF carries the
-/// caller's pc, callee-saved registers, fp and sp, which is everything a stack
-/// walk restores when it crosses one. The resolver stores the callee-saved
-/// registers itself.
+/// The frame that the re-entry resolver reserves stack space for. The LMF holds
+/// the caller's pc, callee-saved registers, fp and sp, which are all the values
+/// that a stack walk restores when it crosses an LMF. The resolver stores the
+/// callee-saved registers itself.
 struct TransitionFrame {
 	MonoLMF lmf;
 	MonoLMF **addr;
@@ -50,9 +50,10 @@ lazy_frame_enter (void *frame, uint64_t caller_fp, uint64_t caller_sp)
 	TransitionFrame *transition = static_cast<TransitionFrame *> (frame);
 
 	/*
-	 * No LMF chain means a thread that has not run managed code, which reaches
-	 * a stub only by the runtime calling one directly. There is no managed
-	 * caller for a walk to find, and nothing to deliver an abort to either.
+	 * No LMF chain means that the thread has not run managed code. Such a
+	 * thread reaches a stub only when the runtime calls the stub directly. In
+	 * that case there is no managed caller for a stack walk to find, and no
+	 * managed code that an abort could be delivered to.
 	 */
 	transition->addr = mono_tls_get_lmf_addr ();
 
@@ -80,8 +81,9 @@ lazy_frame_leave (void *frame)
 	*transition->addr = (MonoLMF *) (((gsize) transition->lmf.previous_lmf) & ~3);
 
 	/*
-	 * An abort aimed at a thread inside the compiler is left as a flag rather
-	 * than delivered by hijack. This is where it gets picked up.
+	 * When a thread is aborted while it is inside the compiler, the runtime
+	 * sets a flag instead of hijacking the thread. This checkpoint reads the
+	 * flag.
 	 */
 	return mono_thread_force_interruption_checkpoint_noraise ();
 }

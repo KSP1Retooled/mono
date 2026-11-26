@@ -1,6 +1,6 @@
 /**
  * \file
- * \brief What the classic code generator needs of the arm64 port.
+ * \brief The arm64 definitions that the classic code generator needs.
  */
 
 #ifndef __MONO_MINI_TIER0_ARM64_H__

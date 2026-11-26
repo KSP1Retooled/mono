@@ -499,8 +499,9 @@ emit_managed_allocator_ilgen (MonoMethodBuilder *mb, gboolean slowpath, gboolean
 	} else {
 		g_assert_not_reached ();
 	}
-	/* The icall returns an object, which the classic compiler does not store
-	 * into a native int local such as p_var. */
+	/* The icall returns an object. The classic compiler rejects storing an
+	 * object into a native int local such as p_var, so the object gets a local
+	 * of its own. */
 	int ret_var = mono_mb_add_local (mb, mono_get_object_type ());
 	mono_mb_emit_stloc (mb, ret_var);
 

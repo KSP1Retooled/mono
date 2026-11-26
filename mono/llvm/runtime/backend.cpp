@@ -629,9 +629,10 @@ MonoBackend::compile_entry (DomainState &domain, MonoDomainMethod &dm)
 			return *code;
 
 		/*
-		 * Tier 0 can fail with an exception object already built, which a
-		 * raising body has no way to hold. The resolver throws it as a pending
-		 * exception instead of entering the landing.
+		 * When tier 0 fails, the failure can already be an exception object,
+		 * and a body that raises the failure cannot hold an object. So the
+		 * failure becomes the thread's pending exception, and the resolver
+		 * throws it instead of entering the landing.
 		 */
 		if constexpr (!arch::has_tier1_codegen) {
 			ERROR_DECL (failure);
@@ -739,8 +740,8 @@ MonoBackend::attach_interop (MonoDomainMethod &dm)
 	if (!is_exposed_to_native_code (method))
 		return llvm::Error::success ();
 
-	/* Without tier 1 the body is classic's, which native code enters
-	 * directly. */
+	/* Without tier 1, the classic compiler built the body, and native code
+	 * can call that body directly. */
 	if constexpr (!arch::has_tier1_codegen) {
 		dm.set_interop_entry (dm.thunk.code ());
 		return llvm::Error::success ();
@@ -1299,8 +1300,8 @@ MonoBackend::compile_body (DomainState &domain, MonoDomainMethod &dm, bool allow
 			return *tier0;
 
 		/*
-		 * A method with no IL of its own continues below to the wrapper mini
-		 * builds for it, and tier 0 compiles that wrapper.
+		 * A method that has no IL of its own continues below. Mini builds a
+		 * wrapper for the method, and tier 0 compiles that wrapper.
 		 */
 		if constexpr (!arch::has_tier1_codegen)
 			if (!is_external_method (dm.method))

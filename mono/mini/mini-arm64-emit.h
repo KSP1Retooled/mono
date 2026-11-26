@@ -1,6 +1,6 @@
 /**
  * \file
- * \brief Instruction-sequence helpers for emitting arm64 code.
+ * \brief Helpers that emit short sequences of arm64 instructions.
  */
 
 #ifndef __MONO_MINI_ARM64_EMIT_H__

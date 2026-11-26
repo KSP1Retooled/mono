@@ -53,8 +53,10 @@ constexpr size_t max_reservation = size_t (INT_MAX);
  * check below is what says so. The alternative is a JITLink relocation error
  * that names none of this.
  *
- * On arm64 the thunks and context stubs reach their targets through absolute
- * literals.
+ * On arm64 the check is off. The thunks and context stubs there load their
+ * targets from 64-bit literals, so they reach any address. Code that JITLink
+ * links on arm64 still uses ADRP and BL, and this check does not cover their
+ * reach.
  */
 #ifdef TARGET_AMD64
 constexpr uintptr_t code_reach_limit = uintptr_t (2) * 1024 * 1024 * 1024;

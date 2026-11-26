@@ -1,9 +1,9 @@
 /**
  * \file
- * \brief The arch hooks tier-1 code generation calls.
+ * \brief The arch hooks that tier-1 code generation calls.
  *
- * arm64 has no tier-1 code generator, so a hook that has to emit tier-1 code
- * aborts.
+ * arm64 has no tier-1 code generator, so every hook that would have to emit
+ * tier-1 code aborts.
  */
 
 #include "arch/arch.hpp"
@@ -20,7 +20,8 @@ no_tier1 ()
 	llvm::report_fatal_error ("mono: arm64 has no tier-1 code generator", false);
 }
 
-/* The thrower's module is plain C and reaches this pass too. */
+/* The module that the thrower builds also runs through this pass. It holds
+ * only C calls, so it has nothing to lower. */
 llvm::PreservedAnalyses
 MonoAbiPass::run (llvm::Module &m, llvm::ModuleAnalysisManager &mam)
 {

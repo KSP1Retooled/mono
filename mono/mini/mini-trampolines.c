@@ -914,8 +914,9 @@ mono_delegate_trampoline (host_mgreg_t *regs, guint8 *code, gpointer *arg, guint
 	/*
 	 * The delegate's target and invocation list do not change after construction.
 	 * Once resolution stores a target-specific trampoline in invoke_impl, reuse it
-	 * instead of repeating the work. The trampoline address is the initial value,
-	 * and an arch whose generic trampoline cannot recover it passes NULL.
+	 * instead of repeating the work. The trampoline address is the initial value.
+	 * On an arch whose generic trampoline cannot recover that address, tramp is
+	 * NULL.
 	 */
 	if (tramp && delegate->invoke_impl && delegate->invoke_impl != tramp)
 		return delegate->invoke_impl;

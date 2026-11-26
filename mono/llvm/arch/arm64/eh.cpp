@@ -1,6 +1,6 @@
 /**
  * \file
- * \brief What exception dispatch and stack walking assume about the machine.
+ * \brief What exception dispatch and stack walking need to know about arm64.
  */
 
 #include "arch/arch.hpp"
@@ -26,7 +26,8 @@ reg_is_recoverable (int hw_reg)
 int
 dwarf_reg_for_win_unwind (unsigned unwind_reg, bool is_vector)
 {
-	/* arm64 here runs on Linux alone, which describes frames in DWARF. */
+	/* This runtime supports arm64 only on Linux, where frames are described
+	 * in DWARF. */
 	return -1;
 }
 

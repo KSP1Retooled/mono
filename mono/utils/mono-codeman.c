@@ -57,8 +57,8 @@ static const MonoCodeManagerCallbacks *code_manager_callbacks;
 #elif defined(__x86_64__) || defined(__aarch64__)
 /*
  * We require 16 byte alignment on amd64 so the fp literals embedded in the code are
- * properly aligned for SSE2. The LLVM backend's thunks and context stubs ask
- * for 16 on every target.
+ * properly aligned for SSE2. The LLVM backend also needs 16-byte alignment for
+ * its thunks and context stubs, on every target.
  */
 #define MIN_ALIGN 16
 #else

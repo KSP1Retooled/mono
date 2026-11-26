@@ -29,10 +29,10 @@ static constexpr std::uint32_t thunk_keyed_code[8] = {
 
 	// +12 entry: ldr x9, key
 	//
-	// The key goes in x9, a scratch register no argument travels in, so that
+	// The key goes in x9, a scratch register that no argument is passed in, so
 	// the thunk leaves x15 as the caller set it. x15 is MONO_ARCH_IMT_REG and
-	// MONO_ARCH_RGCTX_REG, so a key a dispatched call site loads there reaches
-	// the body through the thunk.
+	// MONO_ARCH_RGCTX_REG. When a dispatched call site loads a key into x15, the
+	// key still reaches the body through the thunk.
 	0x58000069,
 	0x58ffff90,             // +16 ldr  x16, slot
 	0xd61f0200,             // +20 br   x16
@@ -45,15 +45,15 @@ static constexpr size_t thunk_entry_offset = 12;
 static constexpr size_t thunk_key_offset = 24;
 static constexpr size_t thunk_size = 32;
 
-/// The jump block alone, entry_offset through the end of the group: what a
-/// runtime detour (Harmony, MonoMod) has to fit inside.
+/// The size of the jump block alone, from entry_offset to the end of the
+/// group. A runtime detour (Harmony, MonoMod) has to fit inside it.
 static constexpr size_t thunk_block_size = thunk_size - thunk_entry_offset;
 
-/// What the whole group has to be aligned to.
+/// The alignment that the whole group needs.
 static constexpr size_t thunk_alignment = 16;
 
-/// Writes a thunk of thunk_size bytes at \p group. \p key, when given, is the
-/// literal the block loads into x9.
+/// Writes a thunk of thunk_size bytes at \p group. When \p key is given, the
+/// block loads it into x9 from a literal.
 inline void
 write_thunk (char *group, const void *key = nullptr)
 {

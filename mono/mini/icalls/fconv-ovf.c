@@ -7,10 +7,10 @@
 #include "icalls/icalls.h"
 
 /*
- * Each range is tested before the cast, because C leaves a cast of a value
- * that does not fit undefined. arm64 and x86 give different results for one.
- * A NaN fails every comparison, so it lands outside each range too. The bounds
- * are exact in both float and double.
+ * Each helper tests the range before it casts, because C leaves the result
+ * undefined when a cast's value does not fit. arm64 and x86 give different
+ * results in that case. A NaN fails every comparison, so a NaN is also outside
+ * every range. Each bound is exact as both a float and a double.
  */
 #define I8_LOWER -9223372036854775808.0
 #define I8_UPPER 9223372036854775808.0

@@ -1,6 +1,6 @@
 /**
  * \file
- * \brief The stub that hands a shared body the context of one instantiation.
+ * \brief The stub that passes one instantiation's context to a shared body.
  */
 
 #include "arch/arch.hpp"
@@ -13,10 +13,11 @@ namespace mono::arch {
 void
 write_context_stub (char *at, void *context, void *target)
 {
-	/* x15 is MONO_ARCH_RGCTX_REG. The target is a literal because a direct
-	 * branch reaches only 128MB, and nothing keeps this target's code chunks
-	 * that close together. x16 is the intra-procedure-call scratch register,
-	 * which a branch between functions may clobber anyway. */
+	/* x15 is MONO_ARCH_RGCTX_REG. The target address is loaded from a literal
+	 * because a direct branch reaches only 128MB, and the code manager does
+	 * not keep its chunks that close together on arm64. x16 is the
+	 * intra-procedure-call scratch register, which any branch between
+	 * functions is allowed to clobber. */
 	static const uint32_t code[] = {
 		0x5800008f, // ldr  x15, context
 		0x580000b0, // ldr  x16, target

@@ -574,12 +574,12 @@ jobs:
           retention-days: 14
 
   # ---------------------------------------------------------------------------
-  # arm64, natively. Only tier 0 runs there, so the tests are the mini corpora
-  # at the default tier and the unit tests of the layers under the runtime.
-  # The rest of the suite has not been brought up on arm64 yet.
+  # arm64, natively. Only tier 0 runs on arm64, so this job runs the mini
+  # corpora at the default tier and the unit tests for the layers below the
+  # runtime. The rest of the suite does not run on arm64 yet.
   #
-  # One job rather than a build and shards, because the suite it runs is
-  # minutes. The class libraries are most of the build.
+  # This is one job rather than a build job and test shards, because the tests
+  # take minutes. Most of the build time goes to the class libraries.
   # ---------------------------------------------------------------------------
   arm64:
     name: Build and test (arm64)
@@ -598,8 +598,9 @@ jobs:
       - name: Install dependencies
         uses: ./.github/actions/deps
 
-      # MONO_USE_SYSTEM_RUNTIME_FOR_TOOLS for the reason the amd64 build gives,
-      # and more so here: the in-tree runtime is tier 0 only.
+      # MONO_USE_SYSTEM_RUNTIME_FOR_TOOLS runs the C# compiler on the system
+      # mono, as in the amd64 build. That matters more here, because the
+      # runtime built on arm64 runs everything at tier 0.
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
@@ -613,8 +614,9 @@ jobs:
       - name: Build
         run: cmake --build build -j "$(nproc)"
 
-      # The selection is by name because the unit tests carry no label. A
-      # selection that matched nothing would read as a pass without --no-tests.
+      # The tests are selected by name because the unit tests have no label.
+      # Without --no-tests, a selection that matched no tests would count as a
+      # pass.
       - name: Test
         run: >
           ctest --test-dir build -j "$(nproc)" --output-on-failure

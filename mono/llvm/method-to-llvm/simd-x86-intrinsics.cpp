@@ -28,8 +28,8 @@
 #include <vector>
 
 #if !defined(TARGET_X86) && !defined(TARGET_AMD64)
-/* Off x86 every one of these classes reports IsSupported as false, so no row
- * below is reached. */
+/* On targets other than x86, every one of these classes reports IsSupported as
+ * false, so the code never reaches any row below. */
 constexpr gboolean mono_hwcap_x86_has_sse1 = FALSE;
 constexpr gboolean mono_hwcap_x86_has_sse2 = FALSE;
 constexpr gboolean mono_hwcap_x86_has_sse3 = FALSE;

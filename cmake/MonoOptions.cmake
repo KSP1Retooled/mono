@@ -22,8 +22,9 @@ else()
 endif()
 
 # Whether mono/mini and mono/llvm have a back end for the target.  Off, the build
-# stops at the layers below them.  MONO_HAVE_TIER1 says whether anything compiles
-# past tier 0; without it, a test that needs a compiled tier is not registered.
+# stops at the layers below them.  MONO_HAVE_TIER1 says whether any method can be
+# compiled past tier 0.  When it is off, tests that need a compiled tier are not
+# registered.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
   set(MONO_TARGET_ARCH amd64)
   set(MONO_HAVE_CODEGEN ON)
