@@ -22,14 +22,6 @@
 #include <mono/metadata/abi-details.h>
 #include "mono/utils/mono-tls-inline.h"
 
-#ifndef DISABLE_JIT
-
-#ifdef MONO_ARCH_ENABLE_PTRAUTH
-	static gboolean enable_ptrauth = TRUE;
-#else
-	static gboolean enable_ptrauth = FALSE;
-#endif
-
 gpointer
 mono_arch_get_restore_context (MonoTrampInfo **info, gboolean aot)
 {
@@ -242,25 +234,14 @@ get_throw_trampoline (int size, gboolean corlib, gboolean rethrow, gboolean llvm
 	}
 
 	/* Call the function */
-	if (aot) {
-		MonoJitICallId icall_id;
+	gpointer icall_func;
 
-		if (resume_unwind)
-			icall_id = MONO_JIT_ICALL_mono_arm_resume_unwind;
-		else
-			icall_id = MONO_JIT_ICALL_mono_arm_throw_exception;
+	if (resume_unwind)
+		icall_func = (gpointer)mono_arm_resume_unwind;
+	else
+		icall_func = (gpointer)mono_arm_throw_exception;
 
-		code = mono_arm_emit_aotconst (&ji, code, start, ARMREG_LR, MONO_PATCH_INFO_JIT_ICALL_ADDR, GUINT_TO_POINTER (icall_id));
-	} else {
-		gpointer icall_func;
-
-		if (resume_unwind)
-			icall_func = (gpointer)mono_arm_resume_unwind;
-		else
-			icall_func = (gpointer)mono_arm_throw_exception;
-
-		code = mono_arm_emit_imm64 (code, ARMREG_LR, (guint64)icall_func);
-	}
+	code = mono_arm_emit_imm64 (code, ARMREG_LR, (guint64)icall_func);
 	code = mono_arm_emit_blrx (code, ARMREG_LR);
 	/* This shouldn't return */
 	arm_brk (code, 0x0);
@@ -323,41 +304,18 @@ mono_arm_get_exception_trampolines (gboolean aot)
 	return tramps;
 }
 
-#else
-
-GSList*
-mono_arm_get_exception_trampolines (gboolean aot)
-{
-	g_assert_not_reached ();
-	return NULL;
-}
-
-#endif /* DISABLE_JIT */
-
 void
 mono_arch_exceptions_init (void)
 {
-	gpointer tramp;
 	GSList *tramps, *l;
 
-	if (mono_aot_only) {
-		tramp = mono_aot_get_trampoline ("llvm_throw_corlib_exception_trampoline");
-		mono_register_jit_icall_info (&mono_get_jit_icall_info ()->mono_llvm_throw_corlib_exception_trampoline, tramp, "llvm_throw_corlib_exception_trampoline", NULL, TRUE, NULL);
-
-		tramp = mono_aot_get_trampoline ("llvm_throw_corlib_exception_abs_trampoline");
-		mono_register_jit_icall_info (&mono_get_jit_icall_info ()->mono_llvm_throw_corlib_exception_abs_trampoline, tramp, "llvm_throw_corlib_exception_abs_trampoline", NULL, TRUE, NULL);
-
-		tramp = mono_aot_get_trampoline ("llvm_resume_unwind_trampoline");
-		mono_register_jit_icall_info (&mono_get_jit_icall_info ()->mono_llvm_resume_unwind_trampoline, tramp, "llvm_resume_unwind_trampoline", NULL, TRUE, NULL);
-	} else {
-		tramps = mono_arm_get_exception_trampolines (FALSE);
-		for (l = tramps; l; l = l->next) {
-			MonoTrampInfo *info = (MonoTrampInfo*)l->data;
-			mono_register_jit_icall_info (info->jit_icall_info, info->code, g_strdup (info->name), NULL, TRUE, NULL);
-			mono_tramp_info_register (info, NULL);
-		}
-		g_slist_free (tramps);
+	tramps = mono_arm_get_exception_trampolines (FALSE);
+	for (l = tramps; l; l = l->next) {
+		MonoTrampInfo *info = (MonoTrampInfo*)l->data;
+		mono_register_jit_icall_info (info->jit_icall_info, info->code, g_strdup (info->name), NULL, TRUE, NULL);
+		mono_tramp_info_register (info, NULL);
 	}
+	g_slist_free (tramps);
 }
 
 /*

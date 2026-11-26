@@ -6,12 +6,18 @@
  * CodeArena. A redirect is a single atomic store to the slot.
  */
 
+#include <config.h>
+
 #include "thunk.hpp"
 
 #include <atomic>
 #include <mono/llvm/jitlink-memory.hpp>
 
+#if defined(TARGET_AMD64)
 #include <mono/arch/amd64/amd64-thunk.hpp>
+#elif defined(TARGET_ARM64)
+#include <mono/arch/arm64/arm64-thunk.hpp>
+#endif
 #include "mini.h"
 #include "mono/llvm/debugging/perf/jitdump.hpp"
 #include "mono/llvm/runtime/naming.hpp"
