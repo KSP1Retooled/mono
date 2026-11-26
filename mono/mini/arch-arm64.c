@@ -1540,6 +1540,14 @@ mono_arch_set_breakpoint (MonoJitInfo *ji, guint8 *ip)
 		g_assert (native_offset % 4 == 0);
 		g_assert (info->bp_addrs [native_offset / 4] == 0);
 		info->bp_addrs [native_offset / 4] = (guint8*)mini_get_breakpoint_trampoline ();
+	} else if (ji->llvm_bp_switch) {
+		/*
+		 * An LLVM body's sequence points read the switch instead of a
+		 * patchable site. One switch covers the whole body, so it counts the
+		 * breakpoints that are set in that body.
+		 */
+		ji->llvm_bp_switch->armed ++;
+		ji->llvm_bp_switch->tramp = mini_get_breakpoint_trampoline ();
 	} else {
 		/* ip points to an ldrx */
 		code += 4;
@@ -1561,6 +1569,11 @@ mono_arch_clear_breakpoint (MonoJitInfo *ji, guint8 *ip)
 
 		g_assert (native_offset % 4 == 0);
 		info->bp_addrs [native_offset / 4] = NULL;
+	} else if (ji->llvm_bp_switch) {
+		if (-- ji->llvm_bp_switch->armed <= 0) {
+			ji->llvm_bp_switch->armed = 0;
+			ji->llvm_bp_switch->tramp = NULL;
+		}
 	} else {
 		/* ip points to an ldrx */
 		code += 4;

@@ -129,11 +129,23 @@ mono_arch_get_call_filter (MonoTrampInfo **info, gboolean aot)
 	for (i = 0; i < num_fregs; ++i)
 		arm_ldrfpx (code, ARMREG_D8 + i, ARMREG_R0, MONO_STRUCT_OFFSET (MonoContext, fregs) + ((i + 8) * sizeof (MonoContextSimdReg)));
 	mono_arm_patch (labels [0], code, MONO_R_ARM64_CBZ);
+	/*
+	 * An LLVM filter body is a separate function. The runtime stores the
+	 * exception in the context's x0, and the filter reads it from x1. The
+	 * filter's argument is the parent's sp, because AArch64 records the
+	 * parent's llvm.localescape offsets against sp. The parent's sp does not
+	 * move after its prologue.
+	 */
+	arm_ldrx (code, ARMREG_R2, ARMREG_R0, MONO_STRUCT_OFFSET (MonoContext, regs) + (ARMREG_R0 * 8));
+	arm_ldrx (code, ARMREG_R3, ARMREG_R0, MONO_STRUCT_OFFSET (MonoContext, regs) + (ARMREG_SP * 8));
 	/* Load fp */
 	arm_ldrx (code, ARMREG_FP, ARMREG_R0, MONO_STRUCT_OFFSET (MonoContext, regs) + (ARMREG_FP * 8));
+	arm_movx (code, ARMREG_R0, ARMREG_R3);
+	arm_movx (code, ARMREG_R16, ARMREG_R1);
+	arm_movx (code, ARMREG_R1, ARMREG_R2);
 
 	/* Make the call */
-	code = mono_arm_emit_blrx (code, ARMREG_R1);
+	code = mono_arm_emit_blrx (code, ARMREG_R16);
 	/* For filters, the result is in R0 */
 
 	/* Restore fp */
@@ -386,7 +398,46 @@ mono_arm_resume_unwind (gpointer arg, host_mgreg_t pc, host_mgreg_t *int_regs, g
 	mono_resume_unwind (&ctx);
 }
 
-/* 
+/*
+ * Steps one frame of the runtime's own C code, using the .eh_frame of the
+ * image that holds the code.
+ *
+ * Generated code calls into that C code without linking an LMF, so a thread
+ * that is stopped inside it has a pc that no MonoJitInfo covers.
+ */
+static gboolean
+unwind_native_frame (MonoContext *ctx, MonoContext *new_ctx,
+                     host_mgreg_t **save_locations, StackFrameInfo *frame)
+{
+	host_mgreg_t regs [MONO_MAX_IREGS + 8 + 1];
+	guint8 *cfa;
+
+	memcpy (regs, &new_ctx->regs, sizeof (host_mgreg_t) * 32);
+	for (int i = 0; i < 8; i++)
+		(regs + MONO_MAX_IREGS) [i] = *((host_mgreg_t*)&new_ctx->fregs [8 + i]);
+
+	if (!mono_unwind_native_frame ((guint8*)MONO_CONTEXT_GET_IP (ctx), regs, MONO_MAX_IREGS + 8,
+	                               save_locations, MONO_MAX_IREGS, &cfa))
+		return FALSE;
+
+	/* A frame that does not shrink the stack would make the walk loop forever. */
+	if ((gsize) cfa <= (gsize) MONO_CONTEXT_GET_SP (ctx))
+		return FALSE;
+
+	memcpy (&new_ctx->regs, regs, sizeof (host_mgreg_t) * 32);
+	for (int i = 0; i < 8; i++)
+		*((host_mgreg_t*)&new_ctx->fregs [8 + i]) = (regs + MONO_MAX_IREGS) [i];
+
+	new_ctx->pc = regs [ARMREG_LR] - 1;
+	new_ctx->regs [ARMREG_SP] = (host_mgreg_t)(gsize)cfa;
+
+	/* The frame holds no managed code, so the walk steps over it without reporting it. */
+	frame->ji = NULL;
+	frame->type = FRAME_TYPE_TRAMPOLINE;
+	return TRUE;
+}
+
+/*
  * mono_arch_unwind_frame:
  *
  * See exceptions-amd64.c for docs;
@@ -449,11 +500,16 @@ mono_arch_unwind_frame (MonoDomain *domain, MonoJitTlsData *jit_tls,
 	} else if (*lmf) {
 		g_assert ((((guint64)(*lmf)->previous_lmf) & 2) == 0);
 
+		/* An LMF with no saved sp is the zeroed one that ends the thread's
+		 * chain. It records no frame, so step out of the native frame instead. */
+		if ((*lmf)->gregs [MONO_ARCH_LMF_REG_SP] == 0)
+			return unwind_native_frame (ctx, new_ctx, save_locations, frame);
+
 		frame->type = FRAME_TYPE_MANAGED_TO_NATIVE;
 
 		ji = mini_jit_info_table_find (domain, (gpointer)(*lmf)->pc, NULL);
 		if (!ji)
-			return FALSE;
+			return unwind_native_frame (ctx, new_ctx, save_locations, frame);
 
 		g_assert (MONO_ARCH_LMF_REGS == ((0x3ff << 19) | (1 << ARMREG_FP) | (1 << ARMREG_SP)));
 		memcpy (&new_ctx->regs [ARMREG_R19], &(*lmf)->gregs [0], sizeof (host_mgreg_t) * 10);

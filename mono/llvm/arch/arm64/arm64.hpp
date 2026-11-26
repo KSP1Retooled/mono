@@ -22,7 +22,7 @@ namespace mono::arch {
 constexpr llvm::Triple::ArchType target_arch = llvm::Triple::aarch64;
 
 /// Whether methods can be compiled past tier 0 here.
-constexpr bool has_tier1_codegen = false;
+constexpr bool has_tier1_codegen = true;
 
 /// The values that a DWARF CIE gives for arm64. Every instruction is four bytes
 /// long, and every saved register is stored at a multiple of 8 bytes below the
@@ -33,14 +33,23 @@ constexpr unsigned dwarf_frame_pointer_reg = 29;  /* x29 */
 constexpr int dwarf_code_alignment_factor = 4;
 constexpr int dwarf_data_alignment_factor = -8;
 
+/// The frame register's name in llvm.read_register.
+constexpr const char *frame_register_name = "x29";
+
+/// Whether a call into C marks the hidden return pointer `sret`. AAPCS64
+/// passes the pointer in x8, and LLVM puts it there only when it is `sret`.
+constexpr bool c_hidden_return_is_sret = true;
+
 /// The stack space that the re-entry resolver reserves for the LMF that it
 /// links while a method compiles. The size is a multiple of 16 so that sp stays
 /// aligned.
 constexpr unsigned managed_frame_size = 128;
 
 /// How many general, scalar floating-point and vector registers a return value
-/// can be split across.
-constexpr unsigned ret_gregs = 2, ret_scalar_fregs = 4, ret_vector_fregs = 4;
+/// can be split across. LLVM returns a first-class aggregate in x0-x7 and
+/// v0-v7, and demotes the whole value to a pointer in x8 when a leaf does not
+/// fit.
+constexpr unsigned ret_gregs = 8, ret_scalar_fregs = 8, ret_vector_fregs = 8;
 
 /// The size of a context stub, and the alignment that it needs. A stub is three
 /// instructions and a nop, followed by two 8-byte literals.

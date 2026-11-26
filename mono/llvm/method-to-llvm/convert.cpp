@@ -241,6 +241,16 @@ float_to_int (llvm::IRBuilder<> &builder, llvm::Value *value, Target target)
 	llvm::Type *to = builder.getIntNTy (stack_bits (target));
 	llvm::Value *converted;
 
+	/*
+	 * On arm64, tier 0 converts to every signed width with a 64-bit fcvtzs and
+	 * truncates the result. So an operand outside the 32-bit range keeps its
+	 * low bits at tier 0 rather than saturating at 32 bits, and this
+	 * conversion does the same.
+	 */
+	if (arch::target_arch == llvm::Triple::aarch64 && target.is_signed
+	    && target.bits < 64)
+		to = builder.getInt64Ty ();
+
 	if (target.is_signed)
 		converted = constrained_float_to_int (builder, value, to, true);
 	else if (target.bits == 64)

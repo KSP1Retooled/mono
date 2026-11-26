@@ -13,7 +13,6 @@
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
-#include <llvm/IR/IntrinsicsX86.h>
 #include <llvm/IR/Metadata.h>
 #include <llvm/Support/ModRef.h>
 
@@ -107,12 +106,11 @@ MethodLLVMEmitter::emit_thread_memory_barrier (MonoIrBuilder &builder)
 	return llvm::Error::success ();
 }
 
-/// Replace the SpinWait_nop icall with the x86 pause hint.
+/// Replaces the SpinWait_nop icall with the target's spin-wait hint.
 llvm::Error
 MethodLLVMEmitter::emit_thread_spin_wait_nop (MonoIrBuilder &builder)
 {
-	builder.CreateIntrinsic (llvm::Intrinsic::x86_sse2_pause,
-	                         llvm::ArrayRef<llvm::Value *> ());
+	arch::emit_spin_wait_hint (builder);
 	return llvm::Error::success ();
 }
 

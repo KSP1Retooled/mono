@@ -22,7 +22,8 @@
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/InlineAsm.h>
-#include <llvm/Support/ErrorHandling.h>
+#include <llvm/IR/Intrinsics.h>
+#include <llvm/IR/Metadata.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -120,7 +121,36 @@ emit_sgen_thread_info (llvm::IRBuilderBase &b)
 void
 emit_lmf_capture_registers (llvm::IRBuilderBase &b, llvm::Value *slot)
 {
-	llvm::report_fatal_error ("mono: arm64 has no tier-1 code generator", false);
+	llvm::LLVMContext &ctx = b.getContext ();
+	llvm::Type *i8 = b.getInt8Ty ();
+	llvm::Type *i64 = b.getInt64Ty ();
+	llvm::Align align (TARGET_SIZEOF_VOID_P);
+	llvm::Value *fp_name = llvm::MetadataAsValue::get (
+		ctx, llvm::MDNode::get (ctx, llvm::MDString::get (ctx, frame_register_name)));
+	auto field = [&] (size_t offset) {
+		return b.CreateConstInBoundsGEP1_32 (i8, slot, (unsigned) offset);
+	};
+	auto greg = [&] (int index) {
+		return field (MONO_STRUCT_OFFSET (MonoLMF, gregs) + index * sizeof (host_mgreg_t));
+	};
+
+	// A stack walk resumes at lmf->pc with the fp and sp stored here, so the
+	// pc must be inside this frame's body, where the frame's unwind info is
+	// valid.
+	llvm::Value *pc = b.CreateCall (llvm::InlineAsm::get (
+		llvm::FunctionType::get (i64, false), "adr $0, .", "=r",
+		/*hasSideEffects=*/true));
+
+	b.CreateAlignedStore (pc, field (MONO_STRUCT_OFFSET (MonoLMF, pc)), align);
+	// The callee-saved registers are stored as zero, because the frame's own
+	// unwind info restores them.
+	for (int i = 0; i < MONO_ARCH_LMF_REG_FP; ++i)
+		b.CreateAlignedStore (b.getInt64 (0), greg (i), align);
+	b.CreateAlignedStore (
+		b.CreateIntrinsic (llvm::Intrinsic::read_register, { i64 }, { fp_name }),
+		greg (MONO_ARCH_LMF_REG_FP), align);
+	b.CreateAlignedStore (b.CreatePtrToInt (b.CreateStackSave (), i64),
+	                      greg (MONO_ARCH_LMF_REG_SP), align);
 }
 
 } // namespace mono::arch

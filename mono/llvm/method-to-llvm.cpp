@@ -1241,13 +1241,13 @@ MethodLLVMEmitter::translate_range (MonoIrBuilder &builder, size_t begin, size_t
 /// The filter body of `parent`'s clause `clause_index`, as a function of its own.
 ///
 /// The runtime's search pass calls it through call_filter with the parent frame's
-/// registers restored. The exception arrives in RAX and the parent's frame pointer
-/// arrives as the argument. The answer, match or keep searching, is returned like any
-/// int.
+/// registers restored. The exception arrives in RAX on amd64 and in x1 on arm64. The
+/// argument is the base that the target records the escaped offsets against: the
+/// parent's frame pointer on amd64, and the parent's stack pointer on arm64. The filter
+/// returns its result, match or keep searching, as an int.
 ///
 /// The parent escaped its arguments and locals through llvm.localescape, in the same
-/// order as here. So llvm.localrecover turns the parent frame pointer back into their
-/// addresses.
+/// order as here. So llvm.localrecover turns that base back into their addresses.
 llvm::Expected<llvm::Function *>
 MethodLLVMEmitter::emit_filter (llvm::Function *parent, uint32_t clause_index)
 {
@@ -1273,7 +1273,8 @@ MethodLLVMEmitter::emit_filter (llvm::Function *parent, uint32_t clause_index)
 	// call_filter enters with the stack 16-aligned, the opposite parity from a SysV
 	// call. So the frame must realign itself, or every callee inherits the wrong
 	// parity.
-	function->addFnAttr ("stackrealign");
+	if (arch::target_arch == llvm::Triple::x86_64)
+		function->addFnAttr ("stackrealign");
 	function->setGC (object_gc_strategy.str ());
 
 	if (il_debug) {
