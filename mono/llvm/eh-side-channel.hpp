@@ -61,7 +61,7 @@ struct MonoEHClause {
 	/// self-describing. A marker kind (mono_lsda_format.hpp) instead says the
 	/// pad is something other than a clause's handler.
 	int kind = 0;
-	/// What the runtime hands the handler to enter this clause.
+	/// The value that the runtime passes to the landing pad to enter this clause.
 	std::uint32_t selector = 0;
 	/// False if the clause_index cannot be recovered safely. Downstream must
 	/// then decline rather than guess.

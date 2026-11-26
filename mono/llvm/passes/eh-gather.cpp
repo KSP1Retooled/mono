@@ -91,7 +91,7 @@ plant_label (MachineBasicBlock &mbb, MachineBasicBlock::iterator at, MCContext &
 	return sym;
 }
 
-/// Whether \p mi is the call a cleanup ends in.
+/// Whether \p mi is the call that ends a cleanup.
 static bool
 resumes_unwind (const MachineInstr &mi)
 {
@@ -187,9 +187,10 @@ MonoEHGatherPass::runOnMachineFunction (MachineFunction &mf)
 				il = TryRegions::il_offset (loc);
 
 			/*
-			 * A cleanup resumes to its own pad, or out of the frame. Left in a
-			 * region, the call's range would grow over the code beside it, or a
-			 * range beside it over the call.
+			 * The call that ends a cleanup unwinds to the pad of the enclosing
+			 * clauses, or out of the frame. If the call kept its region, the
+			 * call's range could grow to cover the code next to it, or a
+			 * neighbouring range could grow to cover the call.
 			 */
 			int region = resumes_unwind (*it) ? -1 : regions.innermost (il);
 

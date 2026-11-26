@@ -160,7 +160,7 @@ mergeable_clause_kinds_only (const Function &callee)
 	return true;
 }
 
-/// The method each of the pad's clauses belongs to.
+/// Adds to \p owners the methods that own the clauses of \p pad.
 static void
 collect_owners (const LandingPadInst &pad, SmallDenseSet<std::uint64_t, 4> &owners)
 {

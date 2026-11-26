@@ -540,7 +540,7 @@ MonoPassBuilder::buildTier1Pipeline ()
 
 	MPM.addPass (MarkPastPgoHashPass ());
 
-	// Nothing behind this inlines a body that has a pad.
+	// No pass after this one inlines a body that has a landing pad.
 	MPM.addPass (llvm::createModuleToFunctionPassAdaptor (mono::DropUnroutedResumePass ()));
 
 	// In front of the lowering below, which takes away the dispatch sites this

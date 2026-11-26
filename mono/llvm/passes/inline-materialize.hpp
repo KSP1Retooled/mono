@@ -53,8 +53,9 @@ bool has_own_clause (const llvm::Function &callee);
 /// Whether all callee landing-pad clauses are supported by EH merging.
 bool mergeable_clause_kinds_only (const llvm::Function &callee);
 
-/// Whether the try around \p call is one of \p callee's own clauses, which then
-/// cannot be told apart once the body is inlined.
+/// Whether a try around \p call belongs to one of \p callee's own clauses. After
+/// the inline, that clause and its copy in the inlined body would share one clause
+/// marker, so the exception table could not tell them apart.
 bool nests_in_own_clause (const llvm::CallBase &call, const llvm::Function &callee);
 
 /// Whether a trial inline leaves one of \p callee's EH markers live.

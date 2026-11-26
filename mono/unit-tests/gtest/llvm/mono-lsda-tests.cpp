@@ -375,7 +375,7 @@ TEST_F (MonoLsdaParse, Version3Declines)
 	expect_decline (b.data (), b.size ());
 }
 
-/* The version before this one declines too - its entries carry no selector. */
+/* Version 4 declines too, because its entries have no selector. */
 TEST_F (MonoLsdaParse, Version4Declines)
 {
 	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 4, 1, { { 1, 5, 0x11, 7, 0 } });
@@ -890,8 +890,8 @@ TEST_F (MonoLsdaBuild, OwnerHeaderDeclineFailsTheJoin)
 }
 
 /*
- * An inlined body's clause 0 and the root's clause 0 share one pad, and only the
- * selector tells the pad which of the two to enter.
+ * An inlined body's clause 0 and the root's clause 0 share one pad. Only the
+ * selector says which of the two the pad enters.
  */
 TEST_F (MonoLsdaBuild, ClausesOfTwoOwnersKeepTheirSelectors)
 {
@@ -1312,11 +1312,9 @@ TEST_F (MonoLsdaNesting, SiblingGroupMultiRangeOnePerRange)
 
 /*
  * DEPTH-3 try/finally x3 - encloser ORDER at depth >= 3. clause0 (inner) in clause1
- * (middle) in clause2 (outer), all finallys, all named by the inner pad. Order is
- * load-bearing: pass-2 resumes at the running clause's ARRAY slot + 1, so
- * [inner@0, middle@1, outer@2] is what makes the runtime run the finallys
- * inner-to-outer. A DESCENDING chain would give [inner, outer, middle] and run them
- * out of order.
+ * (middle) in clause2 (outer), all finallys, all named by the inner pad. The runtime
+ * enters the first entry in array order whose clause applies, so the entries have
+ * to be innermost-first: [inner@0, middle@1, outer@2].
  */
 TEST_F (MonoLsdaNesting, Depth3FinallyAscendingOrder)
 {

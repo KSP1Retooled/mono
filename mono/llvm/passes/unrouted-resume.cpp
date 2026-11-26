@@ -1,6 +1,6 @@
 /**
  * \file
- * \brief Taking the `resume` back off the pads of a compiled method.
+ * \brief Turning the `resume`s that no inline used back into `unreachable`.
  */
 
 #include "unrouted-resume.hpp"
@@ -34,8 +34,9 @@ DropUnroutedResumePass::run (Function &f, FunctionAnalysisManager &fam)
 	for (WeakVH &block : blocks)
 		changeToUnreachable (cast<BasicBlock> (block)->getTerminator ());
 
-	// Tier 1 has no simplification behind this to take the dead arm of each
-	// pad's dispatch away. A simplification can erase a block further down.
+	// Tier 1 runs no simplification after this pass, so this pass removes the
+	// dead default arm of each pad's switch itself. simplifyCFG can erase a
+	// block that is later in the list, so the list holds weak handles.
 	for (WeakVH &block : blocks)
 		if (auto *dead = cast_or_null<BasicBlock> (block))
 			simplifyCFG (dead, tti);

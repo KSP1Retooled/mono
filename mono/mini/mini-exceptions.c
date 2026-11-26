@@ -3003,9 +3003,9 @@ handle_exception_first_pass (MonoContext *ctx, MonoObject *obj, gint32 *out_filt
 
 #ifdef MONO_CONTEXT_SET_LLVM_EH_SELECTOR_REG
 					/*
-					 * Tell the landing pad which clause to enter. This is needed because
-					 * llvm compiled code assumes that the EH code always branches to the
-					 * innermost landing pad.
+					 * Pass the chosen clause's selector to the landing pad, so that the
+					 * pad enters that clause. LLVM-compiled code expects the runtime to
+					 * always enter the innermost landing pad.
 					 */
 					if (ji->from_llvm)
 						MONO_CONTEXT_SET_LLVM_EH_SELECTOR_REG (ctx, ei->llvm_selector);
@@ -3198,7 +3198,10 @@ catch_encloses_handler (MonoJitInfo *ji, int running, MonoJitExceptionInfo *catc
 	if (!ji->from_llvm)
 		return is_address_protected (ji, catch_ei, ei->handler_start);
 
-	/* LLVM code lists the clauses enclosing a clause right behind it, over the same range. */
+	/*
+	 * For LLVM code, the table lists the clauses that enclose a clause right after
+	 * it, with the same range.
+	 */
 	for (int i = running + 1; i < ji->num_clauses; ++i) {
 		MonoJitExceptionInfo *next = &ji->clauses [i];
 
@@ -3213,8 +3216,8 @@ catch_encloses_handler (MonoJitInfo *ji, int running, MonoJitExceptionInfo *catc
 /*
  * Discard the states that transferring control to the catch clause \p catch_ei
  * of \p ji abandons: everything below this frame, plus any handler in this
- * frame the clause encloses. A catch nested inside a running handler, on the
- * other hand, returns to it, so its state stays parked.
+ * frame that the clause encloses. A catch nested inside a running handler
+ * returns to that handler, so the handler's state stays parked.
  */
 static void
 resume_states_drop_abandoned (MonoJitTlsData *jit_tls, MonoJitInfo *ji, MonoJitExceptionInfo *catch_ei, MonoContext *ctx)
@@ -4270,14 +4273,20 @@ mono_resume_unwind (MonoContext *ctx)
 	if (!resume_state_pop (jit_tls, &state))
 		g_error ("Resuming an unwind with no handler state parked for it.");
 
-	/* Back onto the call, which is what the clauses around the handler protect. */
+	/*
+	 * Step back from the return address onto the resume call. The clauses that
+	 * enclose the handler protect the call, and the return address can lie past
+	 * their range.
+	 */
 	MONO_CONTEXT_SET_IP (ctx, (gpointer)((guint8*)MONO_CONTEXT_GET_IP (ctx) - 1));
 	MONO_CONTEXT_SET_SP (ctx, MONO_CONTEXT_GET_SP (&state.ctx));
 	new_ctx = *ctx;
 
 	/*
-	 * A clause over the whole body protects its own handler, so starting over would
-	 * enter it again. It is the last one, and what encloses it is the caller.
+	 * A clause that covers the whole body also covers its own handler, so a new
+	 * search from the call would enter that clause again. In that case the search
+	 * continues after the clause instead. It is the frame's last entry, so the
+	 * exception goes on to the caller.
 	 */
 	if (!is_address_protected (state.ji, &state.ji->clauses [state.clause_index - 1], MONO_CONTEXT_GET_IP (ctx)))
 		state.clause_index = 0;

@@ -5,9 +5,9 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 
 /*
- * Throws through a callee with clauses of its own that tier 2 inlined into the
- * caller's try. Each case has to run the same handlers in the same order, and give
- * the same answer, at tier 2 as it does before.
+ * Each case throws through a callee that has its own clauses, and tier 2 inlines
+ * that callee inside a try in the caller. At tier 2, each case must run the same
+ * handlers in the same order, and return the same answer, as it did before.
  */
 
 namespace Mono.Tiering {
@@ -25,7 +25,7 @@ class Program {
 	static readonly MethodInfo address =
 		typeof (StackFrame).GetMethod ("GetMethodAddress", BindingFlags.NonPublic | BindingFlags.Instance);
 
-	// Whether the two frames above the caller run in one body.
+	// Whether the two frames above the caller run in the same compiled body.
 	static bool CallersShareABody ()
 	{
 		StackTrace st = new StackTrace (2, false);
@@ -220,7 +220,8 @@ class Program {
 		}
 	}
 
-	// Two copies of one body, each with a pad of its own for what follows its finally.
+	// Two inlined copies of one body. After each copy's finally, the unwind goes to
+	// the pad at that copy's own call site.
 	static int Twice (int k)
 	{
 		int total = 0;

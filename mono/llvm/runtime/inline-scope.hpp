@@ -106,7 +106,7 @@ struct InlineScope {
 
 	Budget budget;
 
-	/// The selector the next clause-bearing copy's clauses start at.
+	/// The first selector for the clauses of the next inline copy that has clauses.
 	uint32_t next_selector = first_copy_selector;
 };
 

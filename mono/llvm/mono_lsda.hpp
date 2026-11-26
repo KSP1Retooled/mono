@@ -56,7 +56,7 @@ struct MonoLsdaEntry {
 	/// unset, any entry naming one is declined.
 	std::uint64_t owner = 0;
 
-	/// What the runtime hands the landing pad to enter this clause.
+	/// The value that the runtime passes to the landing pad to enter this clause.
 	std::uint32_t selector = 0;
 };
 

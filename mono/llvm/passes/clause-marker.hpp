@@ -15,26 +15,29 @@
 
 namespace mono {
 
-/// On an inline copy, the selector of the body's clause 0, which the rest follow.
-/// A body without it starts at 0.
+/// The selector of clause 0 in an inline copy. The copy's other clauses take the
+/// selectors that follow it. A function without this attribute numbers its
+/// selectors from 0.
 constexpr llvm::StringRef clause_selector_attribute = "mono-clause-selector";
 
-/// The selector the first clause-bearing copy under a root starts at. Past any
-/// clause index, because a method's clause section holds at most 2^24 bytes.
+/// The first selector that an inline copy with clauses gets under a root. It is
+/// larger than any clause index, because a method's clause section holds at most
+/// 2^24 bytes.
 constexpr std::uint32_t first_copy_selector = 1u << 24;
 
 /// Reads the IL clause index, the clause kind, the clause's owner and its
-/// selector back out of the type_info_N global a landing pad's TypeId names.
+/// selector back out of the type_info_N global that a landing pad's TypeId names.
 /// Returns false when it does not decode. \p owner and \p selector may be null.
 ///
 /// mono smuggles them through the clause's ttype entry, so they are recovered
 /// in-process, with no ttype-table deref and no relocation dependency.
 ///
-/// The v4 form is a 4-word {i32 clause_index, i32 kind, i64 owner, i32 selector}
-/// struct. The selector is what the runtime hands the pad to enter the clause,
-/// and a shorter form's is its clause index.
+/// The v4 form is a 4-word struct {i32 clause_index, i32 kind, i64 owner,
+/// i32 selector}. The selector is the value that the runtime passes to the pad to
+/// enter the clause. A shorter form has no selector word, so its selector is its
+/// clause index.
 ///
-/// The v3 form leaves the selector off. owner is which method clause_index
+/// The v3 form has no selector word. owner is the method that clause_index
 /// indexes into:
 /// (uint64_t)(uintptr_t) of a MonoMethod*, the same convention jit.hpp's
 /// IlInlineRow::callee uses. It is read here rather than off ambient code

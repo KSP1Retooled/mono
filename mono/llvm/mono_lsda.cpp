@@ -25,9 +25,10 @@
  *                          clause in from elsewhere. Otherwise an inlined
  *                          body's own MonoMethod*, same convention as
  *                          jit.hpp's IlInlineRow::callee.
- *     u32 selector         what the runtime hands the landing pad to enter the
- *                          clause, distinct for every clause of the function,
- *                          an inlined body's included.
+ *     u32 selector         the value that the runtime passes to the landing pad
+ *                          to enter the clause. No two clauses of the function
+ *                          have the same selector, including the clauses of
+ *                          inlined bodies.
  *
  * One protected region contributes one entry per clause in its chain. A marker
  * entry describes something other than a protected region.
