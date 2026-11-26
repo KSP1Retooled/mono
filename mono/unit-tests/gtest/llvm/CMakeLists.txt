@@ -6,8 +6,8 @@ if(NOT MONO_ENABLE_LLVM OR NOT MONO_ENABLE_SGEN OR NOT MONO_ENABLE_LIBRARIES)
   return()
 endif()
 
-if(NOT MONO_TARGET_ARCH STREQUAL "amd64")
-  # These drive tier-1 code generation, which only amd64 has.
+if(NOT MONO_HAVE_TIER1)
+  # These drive tier-1 code generation.
   return()
 endif()
 

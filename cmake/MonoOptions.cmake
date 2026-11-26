@@ -22,13 +22,16 @@ else()
 endif()
 
 # Whether mono/mini and mono/llvm have a back end for the target.  Off, the build
-# stops at the layers below them.
+# stops at the layers below them.  MONO_HAVE_TIER1 says whether anything compiles
+# past tier 0; without it, a test that needs a compiled tier is not registered.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
   set(MONO_TARGET_ARCH amd64)
   set(MONO_HAVE_CODEGEN ON)
+  set(MONO_HAVE_TIER1 ON)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" AND MONO_HOST_LINUX)
   set(MONO_TARGET_ARCH arm64)
   set(MONO_HAVE_CODEGEN ON)
+  set(MONO_HAVE_TIER1 OFF)
 else()
   message(FATAL_ERROR
     "Unsupported target ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}; "
