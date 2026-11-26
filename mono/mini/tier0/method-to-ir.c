@@ -5053,7 +5053,7 @@ mini_get_method (MonoCompile *cfg, MonoMethod *m, guint32 token, MonoClass *klas
 	 * generic-sharing compilation, where the open-type check below is skipped.
 	 */
 	if (method && mono_class_is_gtd (method->klass)) {
-		mono_error_set_bad_image (cfg ? cfg->error : error, m_class_get_image (method->klass),
+		mono_error_set_invalid_program (cfg ? cfg->error : error,
 			"Method %s.%s's declaring class is an uninstantiated generic type definition", m_class_get_name (method->klass), method->name);
 		method = NULL;
 	} else if (method && cfg && !cfg->gshared && mono_class_is_open_constructed_type (m_class_get_byval_arg (method->klass))) {
