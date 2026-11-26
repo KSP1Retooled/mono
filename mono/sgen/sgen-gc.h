@@ -1093,19 +1093,23 @@ void sgen_null_links_if (SgenObjectPredicateFunc predicate, void *data, int gene
 
 typedef gpointer (*SgenGCHandleIterateCallback) (gpointer hidden, GCHandleType handle_type, int max_generation, gpointer user);
 
-guint32 sgen_gchandle_new (GCObject *obj, gboolean pinned);
-guint32 sgen_gchandle_new_weakref (GCObject *obj, gboolean track_resurrection);
+gpointer sgen_gchandle_new (GCObject *obj, gboolean pinned);
+gpointer sgen_gchandle_new_weakref (GCObject *obj, gboolean track_resurrection);
 void sgen_gchandle_iterate (GCHandleType handle_type, int max_generation, SgenGCHandleIterateCallback callback, gpointer user)
 	MONO_PERMIT (need (sgen_world_stopped));
 void sgen_gchandle_foreach_strong_target (GFunc callback, gpointer user_data);
-void sgen_gchandle_set_target (guint32 gchandle, GCObject *obj);
+void sgen_gchandle_set_target (gpointer gchandle, GCObject *obj);
 void sgen_mark_normal_gc_handles (void *addr, SgenUserMarkFunc mark_func, void *gc_data)
 	MONO_PERMIT (need (sgen_world_stopped));
 void sgen_gc_handles_report_roots (SgenUserReportRootFunc mark_func, void *gc_data)
 	MONO_PERMIT (need (sgen_world_stopped));
-gpointer sgen_gchandle_get_metadata (guint32 gchandle);
-GCObject *sgen_gchandle_get_target (guint32 gchandle);
-void sgen_gchandle_free (guint32 gchandle);
+gpointer sgen_gchandle_get_metadata (gpointer gchandle);
+GCObject *sgen_gchandle_get_target (gpointer gchandle);
+/* Returns HANDLE_TYPE_MAX where the value is not a handle. */
+GCHandleType sgen_gchandle_get_type (gpointer gchandle);
+guint32 sgen_gchandle_to_u32 (gpointer gchandle);
+gpointer sgen_gchandle_from_u32 (guint32 gchandle);
+void sgen_gchandle_free (gpointer gchandle);
 
 /* Other globals */
 
