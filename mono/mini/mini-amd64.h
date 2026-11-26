@@ -200,8 +200,7 @@ typedef enum {
 } ArgStorage;
 
 /*
- * One scalar of a managed value type, and where the convention puts it. See
- * collect_managed_leaves () in arch-amd64.c for what the scalars are.
+ * One scalar of a managed value type, and where the convention puts it.
  */
 typedef struct {
 	/* ArgInIReg, ArgInFloatSSEReg, ArgInDoubleSSEReg or ArgOnStack */

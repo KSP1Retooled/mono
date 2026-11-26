@@ -47,6 +47,7 @@ set(mini_sources
   jit-dump.cpp
   # the target's calling convention, trampolines and unwinder
   arch-${MONO_TARGET_ARCH}.c
+  managed-leaves.c
   exceptions-${MONO_TARGET_ARCH}.c
   tramp-${MONO_TARGET_ARCH}.c
   mini-${MONO_TARGET_ARCH}-gsharedvt.c

@@ -17,6 +17,7 @@
  * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 #include "mini.h"
+#include "managed-leaves.h"
 #include <string.h>
 #include <math.h>
 #ifdef HAVE_UNISTD_H
@@ -443,78 +444,6 @@ collect_field_info_nested (MonoClass *klass, GArray *fields_array, int offset, g
 	}
 }
 
-/*
- * Returns the width primitive_type_to_llvm_type () (signature.cpp) gives
- * type, or 0 for a type it has none for.
- */
-static int
-managed_primitive_size (int type)
-{
-	switch (type) {
-	case MONO_TYPE_BOOLEAN:
-	case MONO_TYPE_I1:
-	case MONO_TYPE_U1:
-		return 1;
-	case MONO_TYPE_CHAR:
-	case MONO_TYPE_I2:
-	case MONO_TYPE_U2:
-		return 2;
-	case MONO_TYPE_I4:
-	case MONO_TYPE_U4:
-	case MONO_TYPE_R4:
-		return 4;
-	case MONO_TYPE_I8:
-	case MONO_TYPE_U8:
-	case MONO_TYPE_R8:
-		return 8;
-	case MONO_TYPE_I:
-	case MONO_TYPE_U:
-		return TARGET_SIZEOF_VOID_P;
-	default:
-		return 0;
-	}
-}
-
-/*
- * Whether klass converts to a vector rather than to a struct, and how wide
- * that vector is. simd_class_to_llvm_type () (signature.cpp) is the rule. The
- * width is the vector's rather than the class's, because the three
- * System.Numerics types share one four-float register.
- */
-static gboolean
-managed_simd_size (MonoClass *klass, int *size)
-{
-	const char *name;
-
-	if (!m_class_is_simd_type (klass))
-		return FALSE;
-
-	if (mono_class_is_ginst (klass)) {
-		MonoType *etype = mono_class_get_generic_class (klass)->context.class_inst->type_argv [0];
-		int esize = managed_primitive_size (etype->type);
-		int value_size = mono_class_value_size (klass, NULL);
-
-		if (esize == 0 || value_size == 0 || (value_size % esize) != 0)
-			return FALSE;
-		*size = value_size;
-		return TRUE;
-	}
-
-	name = m_class_get_name (klass);
-	if (!strcmp (name, "Vector2d") || !strcmp (name, "Vector2l")
-	    || !strcmp (name, "Vector2ul") || !strcmp (name, "Vector4i")
-	    || !strcmp (name, "Vector4ui") || !strcmp (name, "Vector8s")
-	    || !strcmp (name, "Vector8us") || !strcmp (name, "Vector16sb")
-	    || !strcmp (name, "Vector16b") || !strcmp (name, "Vector4f")
-	    || !strcmp (name, "Vector2") || !strcmp (name, "Vector3")
-	    || !strcmp (name, "Vector4")) {
-		*size = 16;
-		return TRUE;
-	}
-
-	return FALSE;
-}
-
 #ifdef TARGET_WIN32
 
 /* Windows x64 ABI can pass/return value types in register of size 1,2,4,8 bytes. */
@@ -733,26 +662,9 @@ add_valuetype_win64 (MonoMethodSignature *signature, ArgInfo *arg_info, MonoType
  * outlast the argument registers is split, with the rest in one 8-byte stack
  * slot each.
  *
- * The scalars are the flattening of the packed struct the translator builds
- * for the class - convert_vtype (), packed_body () and fill_tail () in
- * mono/llvm/method-to-llvm/signature.cpp. That is why layout no field claims
- * is a scalar here too: it becomes an array of bytes in that struct, and LLVM
- * gives each of those bytes a register of its own.
- *
- * The walk below is that flattening over the metadata rather than over the
- * IR, and mono/llvm/method-to-llvm/call.cpp reads its output directly to
- * build a call site's LLVM struct type, so the two have to agree.
- *
- * Only a managed signature travels this way. A pinvoke signature is the real
- * System V classification, which add_valuetype () below still implements.
+ * Only a managed signature travels this way. A pinvoke signature takes the
+ * real System V classification.
  */
-
-typedef struct {
-	int offset;
-	int size;
-	guint8 sse;    /* rides the SSE file rather than the integer one */
-	guint8 vector; /* a SIMD value, which reaches more return registers than a scalar */
-} ManagedLeaf;
 
 /* What LLVM's return lowering spreads an integer return across. */
 static const AMD64_Reg_No managed_return_regs [] = { AMD64_RAX, AMD64_RDX, AMD64_RCX };
@@ -761,199 +673,6 @@ static const AMD64_Reg_No managed_return_regs [] = { AMD64_RAX, AMD64_RDX, AMD64
 /* RetCC_X86_64_C gives a scalar only XMM0 and XMM1. The four are for a vector. */
 #define MANAGED_RETURN_SCALAR_FREGS 2
 #define MANAGED_RETURN_VECTOR_FREGS 4
-
-static void collect_managed_leaves (MonoType *type, int offset, GArray *leaves);
-
-static void
-add_managed_leaf (GArray *leaves, int offset, int size, gboolean sse, gboolean vector)
-{
-	ManagedLeaf leaf;
-
-	leaf.offset = offset;
-	leaf.size = size;
-	leaf.sse = sse ? 1 : 0;
-	leaf.vector = vector ? 1 : 0;
-	g_array_append_val (leaves, leaf);
-}
-
-static void
-add_padding_leaves (GArray *leaves, int offset, int bytes)
-{
-	int i;
-
-	for (i = 0; i < bytes; ++i)
-		add_managed_leaf (leaves, offset + i, 1, FALSE, FALSE);
-}
-
-typedef struct {
-	MonoType *type;
-	int offset;
-	int size;
-} ManagedField;
-
-/*
- * Orders fields by offset, keeping two at one offset in declaration order.
- * That order is what decides which field of an overlap keeps its slot.
- */
-static void
-sort_managed_fields (GArray *fields)
-{
-	ManagedField *data = (ManagedField *) fields->data;
-	guint i, j;
-
-	for (i = 1; i < fields->len; ++i) {
-		ManagedField key = data [i];
-
-		for (j = i; j > 0 && data [j - 1].offset > key.offset; --j)
-			data [j] = data [j - 1];
-		data [j] = key;
-	}
-}
-
-/*
- * Fills the tail of a value type that no field reaches, repeating the last
- * field the way fill_tail () does where it is a scalar the classifier can
- * tell apart. A `fixed` buffer is one field of the element type inside a
- * class sized for the whole array, and repeating it keeps a float buffer on
- * the SSE file.
- */
-static void
-fill_managed_tail (GArray *leaves, int offset, const ManagedField *last, int at, int size)
-{
-	int gap = size - at;
-	int width, count, i;
-
-	if (last == NULL) {
-		add_padding_leaves (leaves, offset + at, gap);
-		return;
-	}
-
-	width = managed_primitive_size (mini_get_underlying_type (last->type)->type);
-	if (width > 0 && last->size == width) {
-		count = gap / width;
-		for (i = 0; i < count; ++i)
-			collect_managed_leaves (last->type, offset + at + (i * width), leaves);
-		at += count * width;
-		gap -= count * width;
-	}
-
-	if (gap > 0)
-		add_padding_leaves (leaves, offset + at, gap);
-}
-
-static void
-collect_managed_class_leaves (MonoClass *klass, int offset, GArray *leaves)
-{
-	int size = mono_class_value_size (klass, NULL);
-	int simd_size, at = 0;
-	guint entry = leaves->len;
-	gboolean expressible = TRUE;
-	GArray *fields;
-	const ManagedField *last = NULL;
-	gpointer iter;
-	MonoClassField *field;
-	guint i;
-
-	if (managed_simd_size (klass, &simd_size)) {
-		add_managed_leaf (leaves, offset, simd_size, TRUE, TRUE);
-		return;
-	}
-
-	if (m_class_is_enumtype (klass)) {
-		collect_managed_leaves (mono_class_enum_basetype_internal (klass), offset, leaves);
-		return;
-	}
-
-	fields = g_array_new (FALSE, TRUE, sizeof (ManagedField));
-
-	iter = NULL;
-	while ((field = mono_class_get_fields_internal (klass, &iter))) {
-		ManagedField f;
-		int align;
-
-		if (field->type->attrs & FIELD_ATTRIBUTE_STATIC)
-			continue;
-
-		f.type = field->type;
-		f.offset = field->offset - MONO_ABI_SIZEOF (MonoObject);
-		f.size = mono_type_size (field->type, &align);
-		g_array_append_val (fields, f);
-	}
-
-	sort_managed_fields (fields);
-
-	for (i = 0; i < fields->len; ++i) {
-		const ManagedField *f = &g_array_index (fields, ManagedField, i);
-
-		/* An explicit layout can overlap. The first field at an offset
-		 * keeps it, and the rest of the overlap becomes layout no field
-		 * claims. */
-		if (f->offset < at)
-			continue;
-		if (f->offset > at)
-			add_padding_leaves (leaves, offset + at, f->offset - at);
-		if (f->offset + f->size > size) {
-			expressible = FALSE;
-			break;
-		}
-		collect_managed_leaves (f->type, offset + f->offset, leaves);
-		at = f->offset + f->size;
-		last = f;
-	}
-
-	if (!expressible) {
-		/* A layout the walk cannot restate keeps its size, opaquely. */
-		g_array_set_size (leaves, entry);
-		add_padding_leaves (leaves, offset, size);
-	} else if (at < size) {
-		fill_managed_tail (leaves, offset, last, at, size);
-	}
-
-	g_array_free (fields, TRUE);
-}
-
-static void
-collect_managed_leaves (MonoType *type, int offset, GArray *leaves)
-{
-	MonoType *t;
-	int width;
-
-	if (type->byref) {
-		add_managed_leaf (leaves, offset, TARGET_SIZEOF_VOID_P, FALSE, FALSE);
-		return;
-	}
-
-	t = mini_get_underlying_type (type);
-	width = managed_primitive_size (t->type);
-	if (width > 0) {
-		gboolean sse = t->type == MONO_TYPE_R4 || t->type == MONO_TYPE_R8;
-
-		add_managed_leaf (leaves, offset, width, sse, FALSE);
-		return;
-	}
-
-	switch (t->type) {
-	case MONO_TYPE_GENERICINST:
-		if (mono_type_generic_inst_is_valuetype (t))
-			break;
-		/* fall through */
-	case MONO_TYPE_OBJECT:
-	case MONO_TYPE_STRING:
-	case MONO_TYPE_CLASS:
-	case MONO_TYPE_ARRAY:
-	case MONO_TYPE_SZARRAY:
-	case MONO_TYPE_PTR:
-	case MONO_TYPE_FNPTR:
-	case MONO_TYPE_VAR:
-	case MONO_TYPE_MVAR:
-		add_managed_leaf (leaves, offset, TARGET_SIZEOF_VOID_P, FALSE, FALSE);
-		return;
-	default:
-		break;
-	}
-
-	collect_managed_class_leaves (mono_class_from_mono_type_internal (t), offset, leaves);
-}
 
 /*
  * Fills the eightbyte view mono_arch_get_gsharedvt_call_info () reads, but
@@ -1000,7 +719,7 @@ add_managed_valuetype (ArgInfo *ainfo, MonoType *type, gboolean is_return,
 	int extent = size;
 	guint i;
 
-	collect_managed_leaves (type, 0, leaves);
+	mono_collect_managed_leaves (type, 0, leaves);
 
 	for (i = 0; i < leaves->len; ++i) {
 		const ManagedLeaf *leaf = &g_array_index (leaves, ManagedLeaf, i);
@@ -1173,7 +892,7 @@ add_valuetype (MonoMethodSignature *sig, ArgInfo *ainfo, MonoType *type,
 	 * through a pointer.
 	 */
 	if (is_return && !sig->pinvoke
-	    && managed_simd_size (mono_class_from_mono_type_internal (type), &simd_size)) {
+	    && mono_managed_simd_size (mono_class_from_mono_type_internal (type), &simd_size)) {
 		ArgLeaf *leaf = (*pool)++;
 
 		ainfo->storage = ArgValuetypeInReg;
