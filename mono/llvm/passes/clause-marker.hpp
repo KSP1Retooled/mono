@@ -15,35 +15,31 @@
 
 namespace mono {
 
-/// Reads the IL clause index, the clause kind and the clause's owner back out
-/// of the type_info_N global a landing pad's TypeId names. Returns false when
-/// it does not decode. \p owner may be null for a caller that only wants the
-/// index and the kind.
+/// The selector of clause 0 in an inline copy. The copy's other clauses take the
+/// selectors that follow it. A function without this attribute numbers its
+/// selectors from 0.
+constexpr llvm::StringRef clause_selector_attribute = "mono-clause-selector";
+
+/// The first selector that an inline copy with clauses gets under a root. It is
+/// larger than any clause index, because a method's clause section holds at most
+/// 2^24 bytes.
+constexpr std::uint32_t first_copy_selector = 1u << 24;
+
+/// Reads the clause index, kind, owner and selector out of the clause marker
+/// \p gv, the global that a landing pad's catch operand names. Returns false if
+/// \p gv is not a marker. \p owner and \p selector may be null.
 ///
-/// mono smuggles all three through the clause's ttype entry, so they are
-/// recovered in-process, with no ttype-table deref and no relocation
-/// dependency.
+/// A marker has one of these forms:
+/// - {i32 clause_index, i32 kind, i64 owner, i32 selector}
+/// - {i32 clause_index, i32 kind, i64 owner}
+/// - {i32 clause_index, i32 kind}, which leaves \p owner unchanged
+/// - a bare i32 clause_index with kind 0, which also leaves \p owner unchanged
 ///
-/// The v3 form is a 3-word {i32 clause_index, i32 kind, i64 owner} struct.
-/// clause_marker () and resume_marker () (method-to-llvm/exceptions.cpp)
-/// build it. owner is which method clause_index indexes into:
-/// (uint64_t)(uintptr_t) of a MonoMethod*, the same convention jit.hpp's
-/// IlInlineRow::callee uses. It is read here rather than off ambient code
-/// position, because an inline can move an inlined body's own code under a
-/// clause of the root's that was never that body's own - innermost_try ()'s
-/// widening in eh-gather.cpp does exactly that, on purpose. So nothing about
-/// where the protected code ends up answers which method a clause belongs to.
-///
-/// The v2 form is a 2-word {i32 clause_index, i32 kind} struct, still built by
-/// unwind_marker () (passes/tier-counter.cpp) for a pad that is always the
-/// compile's own - it decodes with owner left untouched. A bare i32
-/// ConstantInt is the legacy 1-word form, clause_index alone with kind 0, and
-/// is still accepted the same way. An all-zero struct lowers to
-/// ConstantAggregateZero, which is not a ConstantStruct, so every word is read
-/// with Constant::getAggregateElement rather than a ConstantStruct cast.
+/// owner is the MonoMethod* that clause_index indexes into, as an integer. A
+/// form without a selector word uses its clause index as its selector.
 inline bool
 decode_clause_marker (const llvm::GlobalValue *gv, int &clause_index, int &kind,
-                      std::uint64_t *owner = nullptr)
+                      std::uint64_t *owner = nullptr, std::uint32_t *selector = nullptr)
 {
 	const auto *var = llvm::dyn_cast_or_null<llvm::GlobalVariable> (gv);
 
@@ -55,14 +51,18 @@ decode_clause_marker (const llvm::GlobalValue *gv, int &clause_index, int &kind,
 	if (const auto *ci = llvm::dyn_cast<llvm::ConstantInt> (init)) {
 		clause_index = (int) ci->getSExtValue ();
 		kind = 0;
+		if (selector != nullptr)
+			*selector = (std::uint32_t) clause_index;
 		return true;
 	}
 
 	auto *st = llvm::dyn_cast<llvm::StructType> (init->getType ());
 
-	if (st == nullptr || (st->getNumElements () != 2 && st->getNumElements () != 3))
+	if (st == nullptr || st->getNumElements () < 2 || st->getNumElements () > 4)
 		return false;
 
+	// An all-zero struct is a ConstantAggregateZero rather than a ConstantStruct,
+	// so each word is read with getAggregateElement.
 	const auto *ci0 =
 		llvm::dyn_cast_or_null<llvm::ConstantInt> (init->getAggregateElement ((unsigned) 0));
 	const auto *ci1 =
@@ -74,7 +74,15 @@ decode_clause_marker (const llvm::GlobalValue *gv, int &clause_index, int &kind,
 	clause_index = (int) ci0->getSExtValue ();
 	kind = (int) ci1->getZExtValue ();
 
-	if (st->getNumElements () == 3 && owner != nullptr) {
+	if (selector != nullptr) {
+		const auto *ci3 = llvm::dyn_cast_or_null<llvm::ConstantInt> (
+			init->getAggregateElement ((unsigned) 3));
+
+		*selector = ci3 != nullptr ? (std::uint32_t) ci3->getZExtValue ()
+		                           : (std::uint32_t) clause_index;
+	}
+
+	if (st->getNumElements () >= 3 && owner != nullptr) {
 		const auto *ci2 = llvm::dyn_cast_or_null<llvm::ConstantInt> (
 			init->getAggregateElement ((unsigned) 2));
 

@@ -1085,6 +1085,7 @@ set(MONO_TESTS_TIER2_INLINE_COLD_ELISION_SRC
 # arm it is in.
 set(MONO_TESTS_TIER2_INLINE_CLAUSE_SRC
   tier2-inline-clause.cs
+  tier2-inline-clause-nest.cs
 )
 
 # Which method an inlined finally's `.mono_guards` record belongs to, when

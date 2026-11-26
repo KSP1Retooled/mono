@@ -32,22 +32,6 @@ constexpr std::uint32_t MONO_ECMA_CLAUSE_FINALLY = 2;
 constexpr std::uint32_t MONO_ECMA_CLAUSE_FAULT = 4;
 
 /*
- * The entry's landing pad is a cleanup's resume pad rather than an ordinary
- * handler pad.
- *
- * A finally or fault that some other clause protects ends in an invoke of the
- * resume trampoline. That invoke's unwind edge lands on a pad of its own
- * (emit_resume_exit ()), reached only after the cleanup has run. That is where
- * the runtime continues when it goes on to dispatch an enclosing clause for the
- * same throw.
- *
- * So build_ex_info () records the pad against clause_index and uses it as the
- * handler_start of the enclosing entries. It publishes no entry for the marker
- * itself.
- */
-constexpr std::uint32_t MONO_LSDA_KIND_RESUME_PAD = 0x10000;
-
-/*
  * The entry is not a protected region. It is one PC range that clause_index's
  * finally handler body occupies, and a clause can have several, one per
  * surviving copy of its body. try_start_off and try_len carry the range.

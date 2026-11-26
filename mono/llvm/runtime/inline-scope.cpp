@@ -275,6 +275,12 @@ materialize_inline_copy (Module &module, MonoDomain *domain, MonoMethod *callee,
 	// function behind under a name the linker cannot bind.
 	mark_inline_copy (**target, stub_symbol (callee));
 
+	if (uint32_t clauses = cfg->header->num_clauses) {
+		(*target)->addFnAttr (clause_selector_attribute,
+		                      std::to_string (scope.next_selector));
+		scope.next_selector += clauses;
+	}
+
 	Expected<Function *> materialized = [&] {
 		timing::Scope timed (timing::Phase::translate);
 

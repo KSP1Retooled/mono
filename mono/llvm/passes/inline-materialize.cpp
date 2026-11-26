@@ -8,6 +8,8 @@
 
 #include "../mono_lsda_format.hpp"
 
+#include <llvm/ADT/DenseSet.h>
+#include <llvm/ADT/STLExtras.h>
 #include <llvm/Analysis/ProfileSummaryInfo.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/InstIterator.h>
@@ -156,6 +158,38 @@ mergeable_clause_kinds_only (const Function &callee)
 	}
 
 	return true;
+}
+
+/// Adds to \p owners the methods that own the clauses of \p pad.
+static void
+collect_owners (const LandingPadInst &pad, SmallDenseSet<std::uint64_t, 4> &owners)
+{
+	for (unsigned c = 0; c < pad.getNumClauses (); ++c) {
+		int clause_index, kind;
+		std::uint64_t owner = 0;
+
+		if (decode_clause_marker (dyn_cast<GlobalValue> (pad.getClause (c)),
+		                          clause_index, kind, &owner))
+			owners.insert (owner);
+	}
+}
+
+bool
+nests_in_own_clause (const CallBase &call, const Function &callee)
+{
+	const auto *invoke = dyn_cast<InvokeInst> (&call);
+
+	if (invoke == nullptr)
+		return false;
+
+	SmallDenseSet<std::uint64_t, 4> around, inside;
+
+	collect_owners (*invoke->getLandingPadInst (), around);
+	for (const Instruction &i : instructions (callee))
+		if (const auto *pad = dyn_cast<LandingPadInst> (&i))
+			collect_owners (*pad, inside);
+
+	return any_of (inside, [&] (std::uint64_t owner) { return around.contains (owner); });
 }
 
 namespace {

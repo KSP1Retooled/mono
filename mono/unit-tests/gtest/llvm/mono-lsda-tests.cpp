@@ -95,35 +95,37 @@ make_lsda (std::uint32_t magic, std::uint16_t version, std::uint16_t count,
 		put_u32 (b, e.clause_index);
 		put_u32 (b, e.kind);
 		put_u64 (b, e.owner);
+		put_u32 (b, e.selector);
 	}
 	return b;
 }
 
 /*
- * The exact bytes a writer emits for the v4 format (self-describing kind
- * column, plus the owner it added), for a two-catch geometry with a trailing
- * per-entry kind == 0 and owner == 0:
- *   44534c4d 04000200            magic 'MLSD', version 4, count 2
+ * The exact bytes a writer emits for the v5 format, for a two-catch geometry with
+ * kind == 0 and owner == 0 in both entries:
+ *   44534c4d 05000200            magic 'MLSD', version 5, count 2
  *   00102040 00000000            function 0x40201000
  *   01000000 05000000 11000000
  *   07000000 00000000 00000000
- *   00000000                     {try=1, len=5, h=0x11, clause=7, kind=0, owner=0}
+ *   00000000 09000000            {try=1, len=5, h=0x11, clause=7, kind=0, owner=0, selector=9}
  *   06000000 05000000 0f000000
  *   03000000 00000000 00000000
- *   00000000                     {try=6, len=5, h=0x0f, clause=3, kind=0, owner=0}
- * 72 bytes = 16 + 2*28. Decoded by hand from the format above.
+ *   00000000 03000000            {try=6, len=5, h=0x0f, clause=3, kind=0, owner=0, selector=3}
+ * 80 bytes = 16 + 2*32. Decoded by hand from the format above.
  */
 const std::uint8_t GOLDEN_MLSD [] = {
-	0x44, 0x53, 0x4c, 0x4d, 0x04, 0x00, 0x02, 0x00,
+	0x44, 0x53, 0x4c, 0x4d, 0x05, 0x00, 0x02, 0x00,
 	0x00, 0x10, 0x20, 0x40, 0x00, 0x00, 0x00, 0x00,
 	0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
 	0x11, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x09, 0x00, 0x00, 0x00,
 	0x06, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
 	0x0f, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x03, 0x00, 0x00, 0x00,
 };
 
 #if defined (HOST_WIN32) || (defined (HAVE_SYS_MMAN_H) && defined (HAVE_UNISTD_H))
@@ -285,6 +287,7 @@ protected:
 			EXPECT_EQ (out[i].handler_off, want[i].handler_off);
 			EXPECT_EQ (out[i].clause_index, want[i].clause_index);
 			EXPECT_EQ (out[i].kind, want[i].kind);
+			EXPECT_EQ (out[i].selector, want[i].selector);
 		}
 	}
 
@@ -313,36 +316,36 @@ private:
 TEST_F (MonoLsdaParse, GoldenTwoEntry)
 {
 	expect_parse (GOLDEN_MLSD, sizeof (GOLDEN_MLSD),
-	              { { 1, 5, 0x11, 7, 0 }, { 6, 5, 0x0f, 3, 0 } });
+	              { { 1, 5, 0x11, 7, 0, 0, 9 }, { 6, 5, 0x0f, 3, 0, 0, 3 } });
 }
 
 /* A header-only block (count 0) is well-formed and decodes to nothing. */
 TEST_F (MonoLsdaParse, CountZeroHeaderOnly)
 {
-	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 4, 0, {});
+	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 5,0, {});
 
 	expect_parse (b.data (), b.size (), {});
 }
 
-/* One-entry block: exactly 16 + 28 bytes. Non-zero kind round-trips verbatim. */
+/* One-entry block: exactly 16 + 32 bytes. Non-zero kind round-trips verbatim. */
 TEST_F (MonoLsdaParse, OneEntry)
 {
-	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 4, 1, { { 0x20, 0x08, 0x30, 0, 2 } });
+	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 5,1, { { 0x20, 0x08, 0x30, 0, 2 } });
 
 	expect_parse (b.data (), b.size (), { { 0x20, 0x08, 0x30, 0, 2 } });
 }
 
 TEST_F (MonoLsdaParse, BadMagicDeclines)
 {
-	std::vector<std::uint8_t> b = make_lsda (0xdeadbeefu, 4, 1, { { 1, 5, 0x11, 7, 0 } });
+	std::vector<std::uint8_t> b = make_lsda (0xdeadbeefu, 5, 1, { { 1, 5, 0x11, 7, 0 } });
 
 	expect_decline (b.data (), b.size ());
 }
 
 /*
- * A v1 buffer declines against this v4-only loader. It is a genuine 16-byte-stride
+ * A v1 buffer declines against this v5-only loader. It is a genuine 16-byte-stride
  * v1 record (magic ok, version 1, one 16-byte entry): the loader recognises only
- * version 4, so the older format is refused rather than misread at the wrong
+ * version 5, so the older format is refused rather than misread at the wrong
  * stride.
  */
 TEST_F (MonoLsdaParse, Version1Declines)
@@ -372,10 +375,18 @@ TEST_F (MonoLsdaParse, Version3Declines)
 	expect_decline (b.data (), b.size ());
 }
 
+/* Version 4 declines too, because its entries have no selector. */
+TEST_F (MonoLsdaParse, Version4Declines)
+{
+	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 4, 1, { { 1, 5, 0x11, 7, 0 } });
+
+	expect_decline (b.data (), b.size ());
+}
+
 /* Truncated header: the function field cut short. */
 TEST_F (MonoLsdaParse, TruncatedHeaderDeclines)
 {
-	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 4, 0, {});
+	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 5,0, {});
 
 	b.pop_back ();
 	expect_decline (b.data (), b.size ());
@@ -387,7 +398,7 @@ TEST_F (MonoLsdaParse, TruncatedHeaderDeclines)
  */
 TEST_F (MonoLsdaParse, TruncatedEntryDeclines)
 {
-	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 4, 2, { { 1, 5, 0x11, 7, 0 } });
+	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 5,2, { { 1, 5, 0x11, 7, 0 } });
 
 	expect_decline (b.data (), b.size ());
 }
@@ -400,9 +411,9 @@ TEST_F (MonoLsdaParse, TruncatedEntryDeclines)
 TEST_F (MonoLsdaParse, TwoBlocksDecodeSeparately)
 {
 	const void *other = (const void *) (std::uintptr_t) 0x40209000u;
-	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 4, 1, { { 1, 5, 0x11, 7, 0 } });
+	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 5,1, { { 1, 5, 0x11, 7, 0 } });
 	std::vector<std::uint8_t> second =
-		make_lsda (MLSD_MAGIC, 4, 2, { { 2, 6, 0x12, 8, 0 }, { 9, 3, 0x20, 1, 2 } }, other);
+		make_lsda (MLSD_MAGIC, 5,2, { { 2, 6, 0x12, 8, 0 }, { 9, 3, 0x20, 1, 2 } }, other);
 
 	b.insert (b.end (), second.begin (), second.end ());
 
@@ -414,7 +425,7 @@ TEST_F (MonoLsdaParse, TwoBlocksDecodeSeparately)
 /* A section that names only other functions declines rather than answering. */
 TEST_F (MonoLsdaParse, UnknownFunctionDeclines)
 {
-	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 4, 1, { { 1, 5, 0x11, 7, 0 } });
+	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 5,1, { { 1, 5, 0x11, 7, 0 } });
 
 	expect_decline (b.data (), b.size (), (const void *) (std::uintptr_t) 0x40209000u);
 }
@@ -425,7 +436,7 @@ TEST_F (MonoLsdaParse, UnknownFunctionDeclines)
  */
 TEST_F (MonoLsdaParse, TrailingByteAfterTheWantedBlockIsIgnored)
 {
-	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 4, 1, { { 1, 5, 0x11, 7, 0 } });
+	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 5,1, { { 1, 5, 0x11, 7, 0 } });
 
 	b.push_back (0xaa);
 	expect_parse (b.data (), b.size (), { { 1, 5, 0x11, 7, 0 } });
@@ -435,7 +446,7 @@ TEST_F (MonoLsdaParse, TrailingByteAfterTheWantedBlockIsIgnored)
 TEST_F (MonoLsdaParse, TrailingJunkBeforeTheWantedBlockDeclines)
 {
 	const void *other = (const void *) (std::uintptr_t) 0x40209000u;
-	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 4, 1, { { 1, 5, 0x11, 7, 0 } }, other);
+	std::vector<std::uint8_t> b = make_lsda (MLSD_MAGIC, 5,1, { { 1, 5, 0x11, 7, 0 } }, other);
 
 	b.push_back (0xaa);
 	expect_decline (b.data (), b.size ());
@@ -689,33 +700,10 @@ TEST_F (MonoLsdaBuild, EmptyWhileClausesAccepts)
 }
 
 /*
- * An entries set containing ONLY a resume-pad marker for a FINALLY clause is the
- * same confirmed-safe case as an empty entries set, just reached through a
- * different path: the clause's OWN try-body had every protected call optimized
- * away (nothing left for it to contribute as a base entry), but it has an
- * encloser, so its resume-pad invoke still gets emitted unconditionally. Accept
- * with an empty published array, not decline.
- */
-TEST_F (MonoLsdaBuild, ResumePadOnlyAccepts)
-{
-	MonoExceptionClause fin [1];
-	std::vector<MonoJitExceptionInfo> out;
-
-	memset (fin, 0, sizeof (fin));
-	fin[0].flags = MONO_EXCEPTION_CLAUSE_FINALLY;
-
-	std::vector<MonoLsdaEntry> ents = { { 0x10, 0x08, 0x40, 0, mono::MONO_LSDA_KIND_RESUME_PAD } };
-
-	EXPECT_TRUE (mono::build_ex_info (ents, fin, 1, base, code_len, out));
-	EXPECT_TRUE (out.empty ());
-}
-
-/*
  * SIBLING CATCHES: try { } catch(A) catch(B) is one landing pad with two TypeIds
  * over ONE invoke range, so the writer emits two entries with the SAME range and
  * DIFFERENT clause_index. Both must publish (equal-or-disjoint invariant) - mono
- * matches the shared PC range for both, then picks the type by catch_class with
- * RDX = clause_index.
+ * matches the shared PC range for both, then picks the type by catch_class.
  */
 TEST_F (MonoLsdaBuild, SiblingSameRange)
 {
@@ -902,45 +890,39 @@ TEST_F (MonoLsdaBuild, OwnerHeaderDeclineFailsTheJoin)
 }
 
 /*
- * A resume-pad marker and its dispatch entries share OWNER_A, so record_resume_pad ()
- * has to record and read the pad against OWNER_A's own clause table rather than the
- * caller's. An inner FINALLY (clause 0) encloses a CATCH (clause 1) in one chain, and
- * the CATCH publishes the resume trampoline's target as its handler_start rather than
- * the finally's own landing pad.
+ * An inlined body's clause 0 and the root's clause 0 share one pad. Only the
+ * selector says which of the two the pad enters.
  */
-TEST_F (MonoLsdaBuild, ResumePadChainsThroughItsOwnOwner)
+TEST_F (MonoLsdaBuild, ClausesOfTwoOwnersKeepTheirSelectors)
 {
-	static constexpr std::uint32_t R_START = 0x10, R_LEN = 0x20, H_OFF = 0x40, RESUME_OFF = 0x90;
-	MonoExceptionClause owner_a [2];
+	MonoExceptionClause owner_a [1];
 	std::vector<MonoJitExceptionInfo> out;
 
 	memset (owner_a, 0, sizeof (owner_a));
 	owner_a[0].flags = MONO_EXCEPTION_CLAUSE_FINALLY;
-	owner_a[1].flags = MONO_EXCEPTION_CLAUSE_NONE;
-	owner_a[1].data.catch_class = CC2;
 
 	auto owner_header = [&] (std::uint64_t owner, const MonoExceptionClause *&out_clauses,
 	                         int &out_num) {
 		if (owner != OWNER_A)
 			return false;
 		out_clauses = owner_a;
-		out_num = 2;
+		out_num = 1;
 		return true;
 	};
 
 	std::vector<MonoLsdaEntry> ents = {
-		{ R_START, R_LEN, H_OFF, 0, MONO_EXCEPTION_CLAUSE_FINALLY, OWNER_A },
-		{ R_START, R_LEN, H_OFF, 1, MONO_EXCEPTION_CLAUSE_NONE, OWNER_A },
-		{ 0, 0, RESUME_OFF, 0, mono::MONO_LSDA_KIND_RESUME_PAD, OWNER_A },
+		{ 0x10, 0x20, 0x40, 0, MONO_EXCEPTION_CLAUSE_FINALLY, OWNER_A, 0x1000000 },
+		{ 0x10, 0x20, 0x40, 0, MONO_EXCEPTION_CLAUSE_NONE, 0, 0 },
 	};
 
 	ASSERT_TRUE (mono::build_ex_info (ents, clauses, 2, base, code_len, out, {}, owner_header));
 	ASSERT_EQ (out.size (), 2u);
 	EXPECT_EQ (out[0].flags, (guint32) MONO_EXCEPTION_CLAUSE_FINALLY);
-	EXPECT_EQ (out[0].handler_start, (gpointer) MINI_ADDR_TO_FTNPTR (base + H_OFF));
-	EXPECT_EQ (out[1].flags, (guint32) MONO_EXCEPTION_CLAUSE_NONE);
-	EXPECT_EQ (out[1].data.catch_class, CC2);
-	EXPECT_EQ (out[1].handler_start, (gpointer) MINI_ADDR_TO_FTNPTR (base + RESUME_OFF));
+	EXPECT_EQ (out[0].llvm_selector, 0x1000000u);
+	EXPECT_EQ (out[0].handler_start, at (0x40));
+	EXPECT_EQ (out[1].data.catch_class, CC0);
+	EXPECT_EQ (out[1].llvm_selector, 0u);
+	EXPECT_EQ (out[1].handler_start, at (0x40));
 }
 
 /* ------------------------------------------------------ nesting chain cases */
@@ -1330,11 +1312,9 @@ TEST_F (MonoLsdaNesting, SiblingGroupMultiRangeOnePerRange)
 
 /*
  * DEPTH-3 try/finally x3 - encloser ORDER at depth >= 3. clause0 (inner) in clause1
- * (middle) in clause2 (outer), all finallys, all named by the inner pad. Order is
- * load-bearing: pass-2 resumes at the running clause's ARRAY slot + 1, so
- * [inner@0, middle@1, outer@2] is what makes the runtime run the finallys
- * inner-to-outer. A DESCENDING chain would give [inner, outer, middle] and run them
- * out of order.
+ * (middle) in clause2 (outer), all finallys, all named by the inner pad. The runtime
+ * enters the first entry in array order whose clause applies, so the entries have
+ * to be innermost-first: [inner@0, middle@1, outer@2].
  */
 TEST_F (MonoLsdaNesting, Depth3FinallyAscendingOrder)
 {

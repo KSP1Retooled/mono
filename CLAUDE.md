@@ -685,12 +685,10 @@ reached the same way as the tiering ones above:
 - `--llvm-opt=-mono-inline-clauses=<0|false|empty>` (`runtime/options.cpp`) — turn off the
   tier-2 cost model's ability to translate a clause-bearing callee at all, so it is
   refused the way the shape-test pre-pass always refuses one. On by default.
-  `clause_survives_inline ()` (`passes/top-down-inline.cpp`) is what keeps the inline safe
-  when this is on: it clones the call site, inlines the callee there and runs the same
-  simplification the round applies for real, and the cost model inlines the callee only
-  when none of its own landing pads are left standing. `mono/tests/tier2-inline-clause.cs`
-  gates both arms, reading the `MONO_INLINE_CLAUSES` environment variable the suite sets
-  alongside the flag to know which arm it is in.
+  The Inlining section describes how the clauses of two methods share one table.
+  `mono/tests/tier2-inline-clause.cs` and `tier2-inline-clause-nest.cs` run with the
+  flag on and with it off. Each test reads the `MONO_INLINE_CLAUSES` environment
+  variable, which the suite sets together with the flag, to know which arm it is in.
 - `--llvm-opt=-mono-inline-enable-cost-benefit-analysis=<0|1>` (`passes/inline-cost.cpp`)
   — turn on the copy's cycles-against-size verdict. `finalizeAnalysis ()` asks it
   ahead of the three bonuses above: a site `costBenefitAnalysis ()` can decide, it
@@ -1215,11 +1213,24 @@ the replacements (`inlines_epoch ()`) and a body stamped with an older count nev
 the entry. `entry_point ()` then compiles the method again.
 
 `is_small_and_clause_free ()` still refuses a clause-bearing callee at the pre-pass. The
-tier-2 cost model does not: it inlines one once `clause_survives_inline ()`
-(`passes/top-down-inline.cpp`) has shown, on a clone of the call site inlined and
-simplified the way the round does for real, that none of the callee's own landing pads
-are left standing — eh-gather.cpp reads an inlined body's clauses off the root's own
-`!mono.clauses` alone, so nothing describes one that survives.
+tier-2 cost model does not. The cost model merges a callee's catch, finally and fault
+clauses into the root's table. It refuses a callee with a filter, unless
+`clause_survives_inline ()` (`passes/inline-materialize.cpp`) shows on a clone that the
+filter's clause goes away.
+
+Two things make the merge safe:
+- Each clause's marker names the method that its index belongs to. The table builder
+  uses that method to find the right IL header for the entry.
+- Each clause has its own selector in the compiled body. The runtime passes the
+  selector to the landing pad. If the clause belongs to the pad's own method, the pad
+  enters it. Otherwise the pad runs `resume`, and when the method is inlined into a
+  try, `InlineFunction` turns that `resume` into a branch to the try's pad.
+  `DropUnroutedResumePass` turns each `resume` that no inline replaced into
+  `unreachable`.
+
+A finally or fault ends in a call of `mono_llvm_resume_unwind ()`. The runtime
+continues the unwind from that call as if the call had thrown, so a try that an inline
+puts around the call needs no extra wiring.
 
 ### Detours
 

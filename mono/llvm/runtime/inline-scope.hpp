@@ -9,6 +9,7 @@
 #define MONO_LLVM_RUNTIME_INLINE_SCOPE_HPP
 
 #include "method-to-llvm.hpp"
+#include "passes/clause-marker.hpp"
 
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/ValueHandle.h>
@@ -104,6 +105,9 @@ struct InlineScope {
 	};
 
 	Budget budget;
+
+	/// The first selector for the clauses of the next inline copy that has clauses.
+	uint32_t next_selector = first_copy_selector;
 };
 
 /// Whether sequence points are on. Both inliners refuse every inline while
