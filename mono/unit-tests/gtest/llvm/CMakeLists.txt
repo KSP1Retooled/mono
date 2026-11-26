@@ -6,8 +6,10 @@ if(NOT MONO_ENABLE_LLVM OR NOT MONO_ENABLE_SGEN OR NOT MONO_ENABLE_LIBRARIES)
   return()
 endif()
 
-if(NOT MONO_HAVE_TIER1)
-  # These drive tier-1 code generation.
+if(NOT MONO_TARGET_ARCH STREQUAL "amd64")
+  # Many cases hard-code amd64: hand-written x86 machine code and relocations,
+  # the x86-64 DWARF register numbers, the System V return registers and the
+  # amd64 thunk encoding.
   return()
 endif()
 

@@ -31,13 +31,15 @@ dwarf_reg_for_win_unwind (unsigned unwind_reg, bool is_vector)
 	return -1;
 }
 
+/// A filter receives the base of its parent's frame in x0 and the exception in
+/// x1.
 llvm::Value *
 emit_entered_exception (llvm::IRBuilderBase &b)
 {
 	llvm::Type *ptr = llvm::PointerType::get (b.getContext (), 0);
 
 	return b.CreateCall (
-		llvm::InlineAsm::get (llvm::FunctionType::get (ptr, false), "", "={x0}",
+		llvm::InlineAsm::get (llvm::FunctionType::get (ptr, false), "", "={x1}",
 	                              /*hasSideEffects=*/true));
 }
 

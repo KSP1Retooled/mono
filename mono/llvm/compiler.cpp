@@ -1398,20 +1398,29 @@ enum class PipelineUse { reuse, fresh, compare };
  * `fresh` builds a pipeline for each method, which is what an A/B against the
  * reuse measures. `compare` runs both over one method and stops the process
  * when the two objects differ.
+ *
+ * On AArch64 the default is `fresh`, because the AArch64 AsmPrinter keeps
+ * state from one module to the next. It keeps the faulting accesses that it
+ * recorded, for example. A later object then repeats an earlier object's fault
+ * map and names a symbol that the later object does not have.
  */
 PipelineUse
-pipeline_use ()
+pipeline_use (const Triple &triple)
 {
-	static const PipelineUse use = [] {
+	static const PipelineUse use = [&] {
 		const char *setting = std::getenv ("MONO_LLVM_JIT_CODEGEN");
+		PipelineUse fallback =
+			triple.isAArch64 () ? PipelineUse::fresh : PipelineUse::reuse;
 
 		if (setting == nullptr)
+			return fallback;
+		if (StringRef (setting) == "reuse")
 			return PipelineUse::reuse;
 		if (StringRef (setting) == "fresh")
 			return PipelineUse::fresh;
 		if (StringRef (setting) == "compare")
 			return PipelineUse::compare;
-		return PipelineUse::reuse;
+		return fallback;
 	}();
 
 	return use;
@@ -1421,7 +1430,7 @@ Error
 emit_method_object (TargetMachine &tm, Module &m, SmallVectorImpl<char> &object,
                     MonoEHSideChannel &side_channel)
 {
-	switch (pipeline_use ()) {
+	switch (pipeline_use (tm.getTargetTriple ())) {
 	case PipelineUse::fresh:
 		return emit_object_fresh (tm, m, object, side_channel);
 

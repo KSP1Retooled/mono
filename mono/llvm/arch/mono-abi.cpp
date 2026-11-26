@@ -9,42 +9,14 @@
  *
  * The translator marks such a call with the `monocc` attribute and emits it
  * naturally. MonoAbiPass rewrites it after the optimization pipeline has run,
- * so nothing upstream of it ever sees a lowered call.
- *
- * The classification is done from IR types and the DataLayout. Under System V:
- *
- *   - a value type of up to 16 bytes travels as one or two register words,
- *     each in the integer or the float file;
- *   - one bigger than 16 bytes, or one that arrives after the argument
- *     registers have run out, is copied onto the stack - a byval pointer here;
- *   - a return that does not fit the return registers travels through a
- *     pointer the caller passes as the first argument.
- *
- * The walk recurses to leaf fields the way collect_field_info_nested does
- * (mono/mini/arch-amd64.c), and agrees with it without ever seeing the
- * metadata. What makes that hold is the layout: the translator emits the same
- * shape mini reads, with padding spelled the one way (layout.hpp) that keeps
- * it distinguishable from data.
- *
- * The Microsoft convention asks a shorter question, and only about the size:
- *
- *   - a value type of 1, 2, 4 or 8 bytes travels as an integer of that width,
- *     whatever its fields are;
- *   - one of any other size travels as a pointer to a copy the caller made,
- *     which is not the same as a copy in the outgoing argument area and so is
- *     a plain pointer here rather than a byval one;
- *   - a return follows the same rule, through a pointer the caller passes as
- *     the first argument when it does not fit.
- *
- * Neither answer there depends on how many registers are left, so the walk of
- * the fields and the running register counts are System V's alone.
+ * so nothing upstream of it ever sees a lowered call. Each target classifies
+ * the values by its own C convention, and the rewrite here is shared.
  */
 
 #include "arch/arch.hpp"
+#include "arch/c-lowering.hpp"
 #include "hidden-return.hpp"
-#include "layout.hpp"
 
-#include <llvm/ADT/STLFunctionalExtras.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/Attributes.h>
 #include <llvm/IR/BasicBlock.h>
@@ -66,347 +38,6 @@ using namespace llvm;
 namespace mono::arch {
 
 namespace {
-
-/// One eightbyte of a value type, classified as the register file it rides in.
-enum class Quad { None, Integer, Sse };
-
-/// How a value type crosses a call, before register availability is known.
-struct AggShape {
-	bool memory = false; ///< always a stack copy, no matter the registers
-	unsigned nquads = 0; ///< 0 when nothing travels at all
-	Quad cls[2] = { Quad::None, Quad::None };
-	unsigned qsize[2] = { 0, 0 };
-};
-
-struct Leaf {
-	uint64_t offset;
-	uint64_t size;
-	bool sse;
-};
-
-/// Collects every leaf field of \p t into \p out, each with its flattened
-/// offset - mini's collect_field_info_nested, walked over the IR layout. The
-/// walk steps over what the translator spelled as padding (layout.hpp), where
-/// mini's walk finds no field either.
-void
-collect_leaves (Type *t, uint64_t offset, const DataLayout &dl,
-                SmallVectorImpl<Leaf> &out)
-{
-	if (is_padding_type (t))
-		return;
-
-	if (auto *st = dyn_cast<StructType> (t)) {
-		const StructLayout *layout = dl.getStructLayout (st);
-
-		for (unsigned i = 0; i < st->getNumElements (); ++i)
-			collect_leaves (st->getElementType (i),
-			                offset + layout->getElementOffset (i), dl, out);
-		return;
-	}
-	if (auto *at = dyn_cast<ArrayType> (t)) {
-		Type *element = at->getElementType ();
-		uint64_t stride = dl.getTypeAllocSize (element);
-
-		for (uint64_t i = 0; i < at->getNumElements (); ++i)
-			collect_leaves (element, offset + i * stride, dl, out);
-		return;
-	}
-
-	out.push_back ({ offset, dl.getTypeStoreSize (t), t->isFloatingPointTy () });
-}
-
-/// Rounds \p n up to the next power of two, the width a register load moves
-/// at.
-unsigned
-pow2_width (uint64_t n)
-{
-	unsigned width = 1;
-
-	while (width < n)
-		width <<= 1;
-	return width;
-}
-
-#ifdef HOST_WIN32
-
-/// Classifies by size alone, which is the whole of the Microsoft rule. One
-/// quad comes back for a value type that fits a register, and `memory` for one
-/// that has to be reached through a pointer.
-AggShape
-classify_aggregate (Type *t, const DataLayout &dl)
-{
-	AggShape shape;
-	uint64_t size = dl.getTypeAllocSize (t);
-
-	/*
-	 * C and C++ give an empty struct one byte, so the Microsoft convention
-	 * gives it an argument slot like any other one-byte value type. A managed
-	 * declaration can still ask for a size of zero, and the native declaration
-	 * it is called against takes that slot, so the arguments behind it move
-	 * along by one when the slot is dropped.
-	 */
-	if (size == 0)
-		size = 1;
-
-	if (size != 1 && size != 2 && size != 4 && size != 8) {
-		shape.memory = true;
-		return shape;
-	}
-
-	shape.nquads = 1;
-	shape.cls[0] = Quad::Integer;
-	shape.qsize[0] = (unsigned) size;
-	return shape;
-}
-
-#else
-
-AggShape
-classify_aggregate (Type *t, const DataLayout &dl)
-{
-	AggShape shape;
-	uint64_t size = dl.getTypeAllocSize (t);
-	uint64_t aligned = alignTo (size, 8);
-
-	if (size == 0)
-		return shape;
-
-	if (size > 16) {
-		shape.memory = true;
-		return shape;
-	}
-
-	SmallVector<Leaf, 8> leaves;
-	collect_leaves (t, 0, dl, leaves);
-
-	for (const Leaf &leaf : leaves)
-		if (leaf.offset < 8 && leaf.offset + leaf.size > 8) {
-			/*
-			 * mini refuses to marshal a straddling field (NOT_IMPLEMENTED in
-			 * add_valuetype), so no call like this has two working ends to
-			 * agree with.
-			 */
-			report_fatal_error ("mono: a field of a native by-value struct "
-			                    "straddles an eightbyte, which the runtime "
-			                    "does not marshal");
-		}
-
-	if (leaves.empty ())
-		return shape;
-
-	shape.nquads = aligned > 8 ? 2 : 1;
-
-	for (unsigned quad = 0; quad < shape.nquads; ++quad) {
-		for (const Leaf &leaf : leaves) {
-			if (quad == 0 && leaf.offset >= 8)
-				continue;
-			if (quad == 1 && leaf.offset < 8)
-				continue;
-
-			shape.qsize[quad] = (unsigned) (leaf.offset + leaf.size - quad * 8);
-
-			Quad cls = leaf.sse ? Quad::Sse : Quad::Integer;
-			if (shape.cls[quad] == Quad::None)
-				shape.cls[quad] = cls;
-			else if (shape.cls[quad] != cls)
-				shape.cls[quad] = Quad::Integer;
-		}
-
-		shape.qsize[quad] = pow2_width (shape.qsize[quad]);
-		assert (shape.qsize[quad] <= 8);
-	}
-
-	return shape;
-}
-
-#endif
-
-/// Returns the IR type \p shape's register words travel as. LLVM's own lowering
-/// of a first-class struct argument passes each element separately, which is
-/// exactly what puts one word per register.
-Type *
-travel_type (LLVMContext &ctx, const AggShape &shape)
-{
-	SmallVector<Type *, 2> words;
-
-	for (unsigned quad = 0; quad < shape.nquads; ++quad) {
-		switch (shape.cls[quad]) {
-		case Quad::None:
-			break;
-		case Quad::Integer:
-			words.push_back (Type::getIntNTy (ctx, shape.qsize[quad] * 8));
-			break;
-		case Quad::Sse:
-			words.push_back (shape.qsize[quad] <= 4
-			                         ? Type::getFloatTy (ctx)
-			                         : Type::getDoubleTy (ctx));
-			break;
-		}
-	}
-
-	if (words.empty ())
-		return StructType::get (ctx);
-	if (words.size () == 1)
-		return words[0];
-	return StructType::get (ctx, { words[0], words[1] });
-}
-
-/// How one argument crosses the boundary.
-struct ParamLowering {
-	enum Kind {
-		Direct,   ///< the natural type itself: scalars, pointers, vectors
-		Coerced,  ///< a value type travelling as register-sized words
-		Memory,   ///< a value type copied onto the stack: a byval pointer
-		Indirect, ///< a value type reached through a pointer to the caller's copy
-	} kind = Direct;
-	Type *travel = nullptr; ///< the lowered parameter type when Coerced
-};
-
-/// A whole call's lowering against the C convention.
-struct CallLowering {
-	SmallVector<ParamLowering, 8> params; ///< one per natural parameter
-	/// A value-type return travelling in registers travels as this.
-	Type *ret_travel = nullptr;
-	bool ret_by_address = false;
-};
-
-bool
-is_aggregate (Type *t)
-{
-	return t->isStructTy () || t->isArrayTy ();
-}
-
-#ifdef HOST_WIN32
-
-/// No register counts here: the shape a value takes is the same wherever it
-/// lands, so an argument past the fourth differs only in that LLVM puts it on
-/// the stack.
-CallLowering
-compute_lowering (FunctionType *type, function_ref<bool (unsigned)> is_nest,
-                  const DataLayout &dl, LLVMContext &ctx)
-{
-	CallLowering low;
-	Type *ret = type->getReturnType ();
-
-	if (is_aggregate (ret)) {
-		AggShape shape = classify_aggregate (ret, dl);
-
-		if (shape.memory)
-			low.ret_by_address = true;
-		else
-			low.ret_travel = travel_type (ctx, shape);
-	}
-
-	for (unsigned i = 0; i < type->getNumParams (); ++i) {
-		Type *t = type->getParamType (i);
-		ParamLowering p;
-
-		/* The nest key rides its own register, outside the convention. */
-		if (is_nest (i)) {
-			low.params.push_back (p);
-			continue;
-		}
-
-		if (is_aggregate (t)) {
-			AggShape shape = classify_aggregate (t, dl);
-
-			if (shape.memory) {
-				p.kind = ParamLowering::Indirect;
-			} else {
-				p.kind = ParamLowering::Coerced;
-				p.travel = travel_type (ctx, shape);
-			}
-		}
-
-		low.params.push_back (p);
-	}
-
-	return low;
-}
-
-#else
-
-CallLowering
-compute_lowering (FunctionType *type, function_ref<bool (unsigned)> is_nest,
-                  const DataLayout &dl, LLVMContext &ctx)
-{
-	constexpr unsigned param_gregs = 6, param_fregs = 8;
-
-	CallLowering low;
-	unsigned gr = 0, fr = 0;
-
-	Type *ret = type->getReturnType ();
-
-	if (is_aggregate (ret)) {
-		AggShape shape = classify_aggregate (ret, dl);
-
-		if (!shape.memory) {
-			low.ret_travel = travel_type (ctx, shape);
-		} else {
-			/*
-			 * The hidden pointer is spelled out, in front of everything,
-			 * rather than left to LLVM. Left alone, LLVM does not demote a
-			 * memory-class aggregate at all. Three doubles come back in
-			 * XMM0, XMM1 and ST0, which no C callee writes. The first
-			 * argument then takes the register the hidden pointer was
-			 * owed.
-			 */
-			low.ret_by_address = true;
-			if (gr < param_gregs)
-				gr++;
-		}
-	}
-
-	for (unsigned i = 0; i < type->getNumParams (); ++i) {
-		Type *t = type->getParamType (i);
-		ParamLowering p;
-
-		/* The nest key rides its own register, outside the convention. */
-		if (is_nest (i)) {
-			low.params.push_back (p);
-			continue;
-		}
-
-		if (is_aggregate (t)) {
-			AggShape shape = classify_aggregate (t, dl);
-			unsigned need_gr = 0, need_fr = 0;
-
-			for (unsigned quad = 0; quad < shape.nquads; ++quad) {
-				if (shape.cls[quad] == Quad::Integer)
-					need_gr++;
-				else if (shape.cls[quad] == Quad::Sse)
-					need_fr++;
-			}
-
-			/*
-			 * A value type that does not fit skips counting its
-			 * registers, so they stay free for later arguments, matching
-			 * the rewind mini's own classifier performs.
-			 */
-			if (shape.memory || gr + need_gr > param_gregs
-			    || fr + need_fr > param_fregs) {
-				p.kind = ParamLowering::Memory;
-			} else {
-				gr += need_gr;
-				fr += need_fr;
-				p.kind = ParamLowering::Coerced;
-				p.travel = travel_type (ctx, shape);
-			}
-		} else if (t->isFloatingPointTy () || t->isVectorTy ()) {
-			if (fr < param_fregs)
-				fr++;
-		} else {
-			if (gr < param_gregs)
-				gr++;
-		}
-
-		low.params.push_back (p);
-	}
-
-	return low;
-}
-
-#endif
 
 /// Whether \p low leaves this frame out of the call it describes, which is what
 /// lets the call hand the frame away:
@@ -620,7 +251,12 @@ rewrite_call (CallBase *call)
 		ret_slot->setAlignment (Align (8));
 		args.insert (args.begin (), ret_slot);
 		types.insert (types.begin (), PointerType::get (ctx, 0));
-		attrs.insert (attrs.begin (), AttributeSet ());
+
+		AttrBuilder hidden_attrs (ctx);
+
+		if constexpr (c_hidden_return_is_sret)
+			hidden_attrs.addStructRetAttr (old_type->getReturnType ());
+		attrs.insert (attrs.begin (), AttributeSet::get (ctx, hidden_attrs));
 		ret_type = Type::getVoidTy (ctx);
 	} else if (low.ret_travel != nullptr) {
 		ret_type = low.ret_travel;
@@ -710,7 +346,7 @@ names_frame_register (const CallBase *call)
 
 	auto *name = dyn_cast<MDString> (node->getOperand (0));
 
-	return name != nullptr && name->getString () == "rbp";
+	return name != nullptr && name->getString () == frame_register_name;
 }
 
 } // namespace
@@ -739,9 +375,9 @@ MonoAbiPass::run (Module &m, ModuleAnalysisManager &)
 			}
 
 		/*
-		 * Codegen refuses to read rbp out of a function that rbp is not the
-		 * frame register of, because there it holds whatever the allocator
-		 * put in it. The read arrives with an LMF, and an inliner is free to
+		 * Codegen refuses to read the frame register out of a function that
+		 * does not keep a frame pointer, because there it holds whatever the
+		 * allocator put in it. The read arrives with an LMF, and an inliner is free to
 		 * move one into a root that asked for no frame pointer of its own, so
 		 * the demand is settled here rather than where the read is written.
 		 */
@@ -822,15 +458,16 @@ create_mono_entry_thunk (Module &m, StringRef name, Function *target, Value *thr
 	if (low.ret_by_address) {
 		AttrBuilder hidden_attrs (ctx);
 
-#ifdef HOST_WIN32
 		/*
 		 * The Microsoft convention has the callee answer with the pointer in
 		 * the return register as well as write through it. sret is how LLVM is
 		 * told to do that, and it changes nothing for a caller, which passes
 		 * the pointer in the same register either way.
 		 */
-		hidden_attrs.addStructRetAttr (natural->getReturnType ());
+#ifndef HOST_WIN32
+		if constexpr (c_hidden_return_is_sret)
 #endif
+			hidden_attrs.addStructRetAttr (natural->getReturnType ());
 		types.insert (types.begin (), PointerType::get (ctx, 0));
 		attrs.insert (attrs.begin (), AttributeSet::get (ctx, hidden_attrs));
 		ret_type = Type::getVoidTy (ctx);

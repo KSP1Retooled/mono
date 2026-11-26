@@ -114,6 +114,9 @@ llvm::Value *emit_lmf_address (llvm::IRBuilderBase &b);
 /// returns null when it cannot be reached without a call.
 llvm::Value *emit_sgen_thread_info (llvm::IRBuilderBase &b);
 
+/// Emits the hint that a spin-wait loop gives the processor on each turn.
+void emit_spin_wait_hint (llvm::IRBuilderBase &b);
+
 /// The attribute marking a call, or every call to a declaration, as crossing
 /// into C. It is a marker and carries no value.
 constexpr llvm::StringRef mono_cc_attribute = "monocc";

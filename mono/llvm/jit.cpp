@@ -1030,8 +1030,18 @@ host_target_machine_builder ()
 TargetMachine &
 host_target_machine ()
 {
-	static thread_local std::unique_ptr<TargetMachine> tm =
-		cantFail (host_target_machine_builder ().createTargetMachine ());
+	static thread_local std::unique_ptr<TargetMachine> tm = [] {
+		auto made = cantFail (host_target_machine_builder ().createTargetMachine ());
+
+		/*
+		 * At CodeGenOptLevel::None, AArch64 selects with GlobalISel, which
+		 * runs no combines at that level. A null test then becomes a compare,
+		 * a cset and a test-bit branch, and the implicit null check rewrite
+		 * does not recognize that form. FastISel emits cbz instead.
+		 */
+		made->setGlobalISel (false);
+		return made;
+	}();
 	return *tm;
 }
 
@@ -1889,7 +1899,10 @@ MonoJit::bind_far_references (Module &m)
 		return addr && !within_displacement (*addr);
 	};
 
-	if (FarDataImmediates && m.getModuleFlag ("mono.tier2") != nullptr) {
+	// Only the x86 back end honours a global's own code model. AArch64 reaches
+	// every runtime global through the GOT.
+	if (FarDataImmediates && triple ().isX86 ()
+	    && m.getModuleFlag ("mono.tier2") != nullptr) {
 		LLVMContext &ctx = m.getContext ();
 		Metadata *all_ones = ConstantAsMetadata::get (
 			ConstantInt::getAllOnesValue (Type::getInt64Ty (ctx)));

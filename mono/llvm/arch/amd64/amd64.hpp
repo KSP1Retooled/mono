@@ -51,6 +51,13 @@ constexpr unsigned dwarf_frame_pointer_reg = 6;   /* RBP */
 constexpr int dwarf_code_alignment_factor = 1;
 constexpr int dwarf_data_alignment_factor = -8;
 
+/// The frame register's name in llvm.read_register.
+constexpr const char *frame_register_name = "rbp";
+
+/// Whether a call into C marks the hidden return pointer `sret`. System V
+/// passes the pointer as an ordinary first argument.
+constexpr bool c_hidden_return_is_sret = false;
+
 /*
  * Stack to reserve for the LMF standing for a managed-to-native transition -
  * what lazy_frame_enter () links. lmf.cpp casts it to its own struct and
