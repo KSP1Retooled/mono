@@ -187,6 +187,9 @@ static void
 init_dwarf_reg_map (void)
 {
 	g_assert (NUM_HW_REGS > 0);
+	/* A DWARF number that no hardware register maps to reads as -1, not as register 0. */
+	for (int i = 0; i < NUM_DWARF_REGS; ++i)
+		map_dwarf_reg_to_hw_reg [i] = -1;
 	for (int i = 0; i < NUM_HW_REGS; ++i) {
 		map_dwarf_reg_to_hw_reg [mono_hw_reg_to_dwarf_reg (i)] = i;
 	}
