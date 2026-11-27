@@ -45,12 +45,12 @@ set(mini_sources
   mini-unity.c
   # what both engines dump through
   jit-dump.cpp
-  # amd64
-  arch-amd64.c
-  exceptions-amd64.c
-  tramp-amd64.c
-  mini-amd64-gsharedvt.c
-  tramp-amd64-gsharedvt.c
+  # the target's calling convention, trampolines and unwinder
+  arch-${MONO_TARGET_ARCH}.c
+  exceptions-${MONO_TARGET_ARCH}.c
+  tramp-${MONO_TARGET_ARCH}.c
+  mini-${MONO_TARGET_ARCH}-gsharedvt.c
+  tramp-${MONO_TARGET_ARCH}-gsharedvt.c
   # generated
   "${CMAKE_CURRENT_BINARY_DIR}/version.h")
 

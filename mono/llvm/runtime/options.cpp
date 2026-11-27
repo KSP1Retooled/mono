@@ -1,5 +1,6 @@
 #include "options.hpp"
 
+#include "arch/arch.hpp"
 #include "jit.hpp"
 #include "method-to-llvm.hpp"
 #include "method-to-llvm/intrinsics.hpp"
@@ -168,8 +169,12 @@ llvm::cl::opt<bool> AssumeHintsOpt (
 	llvm::cl::desc ("Lower Mono.JitHints.Assume () to llvm.assume instead of "
 	                "dropping it"));
 
+// A threshold of zero never promotes a method. That is the default on a target
+// that has no tier-1 code generator.
+constexpr unsigned default_tier1_threshold = arch::has_tier1_codegen ? 5000000 : 0;
+
 llvm::cl::opt<unsigned> Tier1ThresholdOpt (
-	"mono-tier1-threshold", llvm::cl::Hidden, llvm::cl::init (5000000),
+	"mono-tier1-threshold", llvm::cl::Hidden, llvm::cl::init (default_tier1_threshold),
 	llvm::cl::desc ("What a tier-0 body spends before it asks for tier 1"));
 
 llvm::cl::opt<unsigned> Tier1EntryWeightOpt (
@@ -768,8 +773,10 @@ wrapper_runs_at_tier0 (MonoMethod *method)
 
 	// The allocator and the write barrier hand out a raw address instead of a
 	// thunk, and SGen finds a suspended thread through the jit-info table.
-	if (method->wrapper_type == MONO_WRAPPER_ALLOC
-	    || method->wrapper_type == MONO_WRAPPER_WRITE_BARRIER)
+	// Without tier 1, classic compiles both kinds of wrapper.
+	if (arch::has_tier1_codegen
+	    && (method->wrapper_type == MONO_WRAPPER_ALLOC
+	        || method->wrapper_type == MONO_WRAPPER_WRITE_BARRIER))
 		return false;
 
 	/*
@@ -793,8 +800,11 @@ wrapper_runs_at_tier0 (MonoMethod *method)
 	 * mid-compile, but classic still corrupts a marshaled struct crossing this
 	 * entry: pinvoke3.exe's test_0_marshal_struct_delegate, winx64structs.exe
 	 * and cominterop.exe all fail under it.
+	 *
+	 * Without tier 1, classic compiles such a wrapper in the native calling
+	 * convention that its signature names, and native code calls it directly.
 	 */
-	if (is_exposed_to_native_code (method))
+	if (arch::has_tier1_codegen && is_exposed_to_native_code (method))
 		return false;
 
 	// The classic compiler publishes the rest through the ordinary thunk,
@@ -818,7 +828,11 @@ runs_at_tier0 (MonoMethod *method)
 	if (!setting.enabled)
 		return false;
 
-	if (is_external_method (method) || builtin_body_replaces_il (method))
+	if (is_external_method (method))
+		return false;
+
+	/* Without tier 1, the method's own IL is the only body that can run. */
+	if (arch::has_tier1_codegen && builtin_body_replaces_il (method))
 		return false;
 
 	if (method->wrapper_type != MONO_WRAPPER_NONE

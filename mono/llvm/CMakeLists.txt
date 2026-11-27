@@ -4,6 +4,14 @@ file(GLOB_RECURSE sources CONFIGURE_DEPENDS
     *.cpp
     *.hpp
 )
+# arch/ holds one directory per target, and only the one being built is
+# compiled.
+list(FILTER sources EXCLUDE REGEX "/arch/[^/]+/")
+file(GLOB_RECURSE arch_sources CONFIGURE_DEPENDS
+    "arch/${MONO_TARGET_ARCH}/*.cpp"
+    "arch/${MONO_TARGET_ARCH}/*.hpp"
+)
+list(APPEND sources ${arch_sources})
 
 mono_add_object_library(mono-llvm
     SOURCES ${sources}

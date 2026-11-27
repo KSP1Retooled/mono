@@ -5053,7 +5053,7 @@ mini_get_method (MonoCompile *cfg, MonoMethod *m, guint32 token, MonoClass *klas
 	 * generic-sharing compilation, where the open-type check below is skipped.
 	 */
 	if (method && mono_class_is_gtd (method->klass)) {
-		mono_error_set_bad_image (cfg ? cfg->error : error, m_class_get_image (method->klass),
+		mono_error_set_invalid_program (cfg ? cfg->error : error,
 			"Method %s.%s's declaring class is an uninstantiated generic type definition", m_class_get_name (method->klass), method->name);
 		method = NULL;
 	} else if (method && cfg && !cfg->gshared && mono_class_is_open_constructed_type (m_class_get_byval_arg (method->klass))) {
@@ -11047,6 +11047,35 @@ mono_ldptr:
 			*sp++ = ins;
 			inline_costs += CALL_COST * MIN(10, num_calls++);
 			break;
+
+		case MONO_CEE_MONO_LDPTR_CRITICAL_REGION_WAIT_FLAG:
+			g_assert (method->wrapper_type != MONO_WRAPPER_NONE);
+			EMIT_NEW_PCONST (cfg, ins, &mono_threads_critical_region_wait_requested);
+			*sp++ = ins;
+			break;
+
+		case MONO_CEE_MONO_THROW_BUILTIN: {
+			/* The operand is the row number of a corlib type definition. It
+			 * does not include the table bits of a token. */
+			MonoInst *iargs [1];
+
+			g_assert (method->wrapper_type != MONO_WRAPPER_NONE);
+			EMIT_NEW_ICONST (cfg, iargs [0], MONO_TOKEN_TYPE_DEF | n);
+			ins = mono_emit_jit_icall (cfg, mono_create_corlib_exception_0, iargs);
+			int exc_reg = ins->dreg;
+
+			MONO_INST_NEW (cfg, ins, OP_THROW);
+			ins->sreg1 = exc_reg;
+			cfg->cbb->out_of_line = TRUE;
+			MONO_ADD_INS (cfg->cbb, ins);
+			MONO_INST_NEW (cfg, ins, OP_NOT_REACHED);
+			MONO_ADD_INS (cfg->cbb, ins);
+			sp = stack_start;
+
+			link_bblock (cfg, cfg->cbb, end_bblock);
+			start_new_bblock = 1;
+			break;
+		}
 
 		case MONO_CEE_MONO_LDPTR: {
 			gpointer ptr;

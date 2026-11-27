@@ -8,24 +8,32 @@ endif()
 # runs with the class libraries off.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+set(_arch "${MONO_TARGET_ARCH}")
+string(TOUPPER "${_arch}" _arch_upper)
+if(_arch STREQUAL "amd64")
+  set(_desc_symbol amd64_desc)
+else()
+  set(_desc_symbol arm64_cpu_desc)
+endif()
+
 add_custom_command(
-  OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cpu-amd64.h"
+  OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cpu-${_arch}.h"
   COMMAND Python3::Interpreter
           "${CMAKE_CURRENT_SOURCE_DIR}/genmdesc.py"
-          TARGET_AMD64 "${CMAKE_CURRENT_SOURCE_DIR}"
-          "${CMAKE_CURRENT_BINARY_DIR}/cpu-amd64.h"
-          amd64_desc
-          "${CMAKE_CURRENT_SOURCE_DIR}/arch/amd64/cpu-amd64.md"
-  DEPENDS genmdesc.py mini-ops.h arch/amd64/cpu-amd64.md
-  COMMENT "Generating tier0 cpu-amd64.h"
+          TARGET_${_arch_upper} "${CMAKE_CURRENT_SOURCE_DIR}"
+          "${CMAKE_CURRENT_BINARY_DIR}/cpu-${_arch}.h"
+          ${_desc_symbol}
+          "${CMAKE_CURRENT_SOURCE_DIR}/arch/${_arch}/cpu-${_arch}.md"
+  DEPENDS genmdesc.py mini-ops.h arch/${_arch}/cpu-${_arch}.md
+  COMMENT "Generating tier0 cpu-${_arch}.h"
   VERBATIM)
-add_custom_target(mono-tier0-cpu-desc DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/cpu-amd64.h")
+add_custom_target(mono-tier0-cpu-desc DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/cpu-${_arch}.h")
 
 set(MONO_TIER0_SOURCES
   abcremoval.c
   alias-analysis.c
   arch-stubs.c
-  arch/amd64/codegen.c
+  arch/${_arch}/codegen.c
   branch-opts.c
   calls.c
   cfold.c
@@ -50,7 +58,7 @@ set(MONO_TIER0_SOURCES
   type-checking.c)
 target_sources(mini PRIVATE
   ${MONO_TIER0_SOURCES}
-  "${CMAKE_CURRENT_BINARY_DIR}/cpu-amd64.h")
+  "${CMAKE_CURRENT_BINARY_DIR}/cpu-${_arch}.h")
 target_include_directories(mini PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_CURRENT_BINARY_DIR}")

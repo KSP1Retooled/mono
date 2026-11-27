@@ -5,10 +5,12 @@
 #ifndef __MONO_MINI_ARCH_H__
 #define __MONO_MINI_ARCH_H__
 
-#ifdef TARGET_AMD64
+#if defined(TARGET_AMD64)
 #include "mini-amd64.h"
+#elif defined(TARGET_ARM64)
+#include "mini-arm64.h"
 #else
-#error amd64 is the only architecture this runtime targets
+#error this runtime targets amd64 and arm64
 #endif
 
 #ifdef TARGET_WIN32

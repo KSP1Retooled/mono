@@ -59,15 +59,17 @@ set(_regtests
 # calls each test method once, so a method's call counter never runs out on
 # its own, and left at the default the whole corpus runs at tier 0 -- which is
 # what the suite below is for.
-foreach(_t IN LISTS _regtests)
-  string(REGEX REPLACE "\\.exe$" "" _stem "${_t}")
-  add_test(NAME "mini-regression/${_stem}"
-           COMMAND "${CMAKE_COMMAND}" -E env "MONO_PATH=${_class_dir}"
-                   "MONO_ENV_OPTIONS=--llvm-opt=-mono-tier0-filter=0"
-                   "${_wrapper}" --regression ${_t}
-           WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-  set_tests_properties("mini-regression/${_stem}" PROPERTIES LABELS regression)
-endforeach()
+if(MONO_HAVE_TIER1)
+  foreach(_t IN LISTS _regtests)
+    string(REGEX REPLACE "\\.exe$" "" _stem "${_t}")
+    add_test(NAME "mini-regression/${_stem}"
+             COMMAND "${CMAKE_COMMAND}" -E env "MONO_PATH=${_class_dir}"
+                     "MONO_ENV_OPTIONS=--llvm-opt=-mono-tier0-filter=0"
+                     "${_wrapper}" --regression ${_t}
+             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties("mini-regression/${_stem}" PROPERTIES LABELS regression)
+  endforeach()
+endif()
 
 # The same corpora at the default tier, where every method with IL of its own
 # compiles through the classic compiler and the rest go through the backend
@@ -87,6 +89,26 @@ foreach(_t IN LISTS _regtests)
            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
   set_tests_properties("mini-regression-tier0/${_stem}" PROPERTIES LABELS regression)
 endforeach()
+
+# Cross-domain calls. The crossing happens on the first call rather than after
+# a compile, so these need nothing to show they got far enough.
+#
+# The corpus directory joins MONO_PATH because the child domain resolves the
+# program by assembly name rather than by the path it was started from.
+mono_path_join(_xdomain_path "${_class_dir}" "${CMAKE_CURRENT_BINARY_DIR}")
+# The remembered-set check for the same reason the tier-0 corpus carries it.
+add_test(NAME "mini-regression/xdomain"
+         COMMAND "${CMAKE_COMMAND}" -E env
+                 "MONO_PATH=${_xdomain_path}"
+                 "MONO_GC_DEBUG=check-remset-consistency"
+                 "${_wrapper}" xdomain.exe
+         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+set_tests_properties("mini-regression/xdomain" PROPERTIES LABELS regression)
+
+# Every test below needs a compiled tier.
+if(NOT MONO_HAVE_TIER1)
+  return()
+endif()
 
 # The tier-0-caller/compiled-callee crossing. It is where a callee's prototype
 # has to agree with what its caller was compiled against, and getting that
@@ -129,21 +151,6 @@ add_test(NAME "mini-regression/iltests-classic-ldftn"
          WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 set_tests_properties("mini-regression/iltests-classic-ldftn"
                      PROPERTIES LABELS regression)
-
-# Cross-domain calls. The crossing happens on the first call rather than after
-# a compile, so these need nothing to show they got far enough.
-#
-# The corpus directory joins MONO_PATH because the child domain resolves the
-# program by assembly name rather than by the path it was started from.
-mono_path_join(_xdomain_path "${_class_dir}" "${CMAKE_CURRENT_BINARY_DIR}")
-# The remembered-set check for the same reason the tier-0 corpus carries it.
-add_test(NAME "mini-regression/xdomain"
-         COMMAND "${CMAKE_COMMAND}" -E env
-                 "MONO_PATH=${_xdomain_path}"
-                 "MONO_GC_DEBUG=check-remset-consistency"
-                 "${_wrapper}" xdomain.exe
-         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-set_tests_properties("mini-regression/xdomain" PROPERTIES LABELS regression)
 
 add_test(NAME "mini-regression/xdomain-compiled"
          COMMAND "${CMAKE_COMMAND}" -E env

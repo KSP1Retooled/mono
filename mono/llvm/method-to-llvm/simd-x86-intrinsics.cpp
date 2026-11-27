@@ -27,6 +27,26 @@
 
 #include <vector>
 
+#if !defined(TARGET_X86) && !defined(TARGET_AMD64)
+/* On targets other than x86, every one of these classes reports IsSupported as
+ * false, so the code never reaches any row below. */
+constexpr gboolean mono_hwcap_x86_has_sse1 = FALSE;
+constexpr gboolean mono_hwcap_x86_has_sse2 = FALSE;
+constexpr gboolean mono_hwcap_x86_has_sse3 = FALSE;
+constexpr gboolean mono_hwcap_x86_has_ssse3 = FALSE;
+constexpr gboolean mono_hwcap_x86_has_sse41 = FALSE;
+constexpr gboolean mono_hwcap_x86_has_sse42 = FALSE;
+constexpr gboolean mono_hwcap_x86_has_avx = FALSE;
+constexpr gboolean mono_hwcap_x86_has_avx2 = FALSE;
+constexpr gboolean mono_hwcap_x86_has_popcnt = FALSE;
+constexpr gboolean mono_hwcap_x86_has_lzcnt = FALSE;
+constexpr gboolean mono_hwcap_x86_has_bmi1 = FALSE;
+constexpr gboolean mono_hwcap_x86_has_bmi2 = FALSE;
+constexpr gboolean mono_hwcap_x86_has_aes = FALSE;
+constexpr gboolean mono_hwcap_x86_has_pclmulqdq = FALSE;
+constexpr gboolean mono_hwcap_x86_has_fma = FALSE;
+#endif
+
 namespace mono {
 
 namespace {

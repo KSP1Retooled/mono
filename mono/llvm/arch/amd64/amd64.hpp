@@ -34,6 +34,9 @@ namespace mono::arch {
 
 constexpr llvm::Triple::ArchType target_arch = llvm::Triple::x86_64;
 
+/// Whether methods can be compiled past tier 0 here.
+constexpr bool has_tier1_codegen = true;
+
 /*
  * What a DWARF CIE for this target says: which column holds the return address,
  * and the factors a CFI program's operands are scaled by.
