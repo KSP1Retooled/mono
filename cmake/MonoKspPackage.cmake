@@ -7,8 +7,9 @@
 # against "Kerbal Space Program - Test 5". etc/mono/config sits beside the
 # per-arch directory on both, rather than under it.
 #
-# On Windows the zip unpacks over the install root with nothing left to move:
-# the managed assemblies carry KSP_x64_Data/Managed with them.
+# The zip unpacks over the install root with nothing left to move: the managed
+# assemblies carry KSP_x64_Data/Managed (Windows) or KSP_Data/Managed (Linux)
+# with them.
 
 if(NOT MONO_ENABLE_MCS_BUILD OR NOT MONO_ENABLE_LIBRARIES)
   return()
@@ -35,11 +36,7 @@ else()
   set(_ksp_native_subdir   "MonoBleedingEdge/x86_64")
   set(_ksp_runtime_name    "libmonobdwgc-2.0.so")
   set(_ksp_native_pal      "${MONO_ENABLE_MONO_NATIVE}")
-  # Which <Game>_Data a Linux install carries is unchecked, so the assemblies
-  # stay at the root of the zip and the README says where to put them. Name
-  # the directory here once one can be read, and this zip unpacks in place
-  # like the Windows one.
-  set(_ksp_managed_subdir  "Managed")
+  set(_ksp_managed_subdir  "KSP_Data/Managed")
 endif()
 
 if(NOT MONO_HOST_WINDOWS)
@@ -94,10 +91,12 @@ if(MONO_HOST_WINDOWS)
 and every file lands where the game already looks for it.")
 else()
   set(_ksp_readme_install
-"Unpack MonoBleedingEdge/ over the KSP install root, and copy the contents of
-Managed/ over <Game>_Data/Managed -- which of those this install carries is
-not something the packaging step could check, so the assemblies are left at
-the root of the zip for you to place.")
+"Unpack it over the KSP install root -- the directory holding KSP.x86_64 --
+and every file lands where the game already looks for it.
+
+The debug info for the native libraries ships separately, as
+mono-llvm-jit-ksp-linux-debug.zip. Unpack it over the same root for gdb to
+find it.")
 endif()
 file(WRITE "${_ksp_readme}"
 "This zip replaces a Unity KSP install's own Mono runtime and class
@@ -198,6 +197,35 @@ if(MONO_PATCHELF)
        COMMAND "${MONO_PATCHELF}" --set-rpath "\$ORIGIN"
                "${_ksp_stage}/${_ksp_native_subdir}/${_ksp_runtime_name}")
 endif()
+# The debug info is most of the runtime's size, so it ships as a second zip
+# laid out like the first. Unpacked over the same root, each .debug file lands
+# beside the library whose debuglink names it, where gdb looks for it.
+set(_ksp_debug_commands "")
+if(NOT MONO_HOST_WINDOWS AND CMAKE_OBJCOPY)
+  set(_ksp_debug_stage "${CMAKE_BINARY_DIR}/ksp-package-debug")
+  set(_ksp_debug_zip "${CMAKE_BINARY_DIR}/mono-llvm-jit-ksp-${_ksp_platform_tag}-debug.zip")
+  set(_ksp_split_libs "${_ksp_runtime_name}")
+  if(_ksp_native_pal)
+    list(APPEND _ksp_split_libs libmono-native.so)
+  endif()
+  list(APPEND _ksp_debug_commands
+       COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ksp_debug_stage}"
+       COMMAND "${CMAKE_COMMAND}" -E make_directory "${_ksp_debug_stage}/${_ksp_native_subdir}")
+  foreach(_lib IN LISTS _ksp_split_libs)
+    set(_shipped "${_ksp_stage}/${_ksp_native_subdir}/${_lib}")
+    set(_debug "${_ksp_debug_stage}/${_ksp_native_subdir}/${_lib}.debug")
+    list(APPEND _ksp_debug_commands
+         COMMAND "${CMAKE_OBJCOPY}" --only-keep-debug "${_shipped}" "${_debug}"
+         COMMAND "${CMAKE_OBJCOPY}" --strip-debug "--add-gnu-debuglink=${_debug}" "${_shipped}")
+  endforeach()
+  list(APPEND _ksp_debug_commands
+       COMMAND "${CMAKE_COMMAND}" -E chdir "${_ksp_debug_stage}"
+               "${CMAKE_COMMAND}" -E tar cf "${_ksp_debug_zip}" --format=zip -- .)
+elseif(NOT MONO_HOST_WINDOWS)
+  message(WARNING
+    "objcopy not found; package-ksp will ship the runtime with its debug info "
+    "inside it")
+endif()
 if(MONO_HOST_WINDOWS)
   # Unity ships a MonoPosixHelper of its own. Leaving it there pairs this
   # tree's System.dll with a stranger's helper, across the P/Invoke surface
@@ -240,6 +268,7 @@ add_custom_target(package-ksp
   COMMAND "${CMAKE_COMMAND}" -E copy
           "${_ksp_readme}" "${_ksp_stage}/README-mono-llvm-jit.txt"
   ${_ksp_copy_commands}
+  ${_ksp_debug_commands}
   # WORKING_DIRECTORY on the whole target would cd once, before the rm -rf
   # above deletes that same directory. The shell's cwd then points at an
   # unlinked inode, and every relative path after that, this one included,

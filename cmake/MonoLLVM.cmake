@@ -47,6 +47,10 @@ if(MONO_UNITY_BUILD)
   find_library(MONO_LLVM_STATIC NAMES libLLVM.a
                PATHS "${LLVM_LIBRARY_DIRS}" NO_DEFAULT_PATH
                DOC "Static LLVM the Unity build links")
+  # The system libraries below are what the whole of LLVM can use, libz3
+  # among them, and a player machine has no reason to carry the ones this
+  # runtime never calls.
+  target_link_options(mono_llvm INTERFACE "-Wl,--as-needed")
   if(MONO_LLVM_STATIC)
     execute_process(
       COMMAND "${LLVM_TOOLS_BINARY_DIR}/llvm-config" --link-static --system-libs

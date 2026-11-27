@@ -18,7 +18,9 @@ env:
 jobs:
   build-linux:
     name: Release build (Linux)
-    runs-on: ubuntu-24.04
+    # A player machine needs a glibc at least as new as the one this links
+    # against, so the oldest runner still offered sets the baseline.
+    runs-on: ubuntu-22.04
     timeout-minutes: 300
 
     steps:
@@ -81,11 +83,36 @@ jobs:
       - name: Package the KSP zip
         run: cmake --build build --target package-ksp -j "$(nproc)"
 
+      - name: The package runs on the baseline
+        run: |
+          set -o pipefail
+          cd build/ksp-package/MonoBleedingEdge/x86_64
+          for so in *.so; do
+            echo "== $so"
+            readelf -d "$so" | grep NEEDED
+            if readelf -d "$so" | grep -q 'NEEDED.*libz3'; then
+              echo "::error::$so still needs libz3"
+              exit 1
+            fi
+            glibc=$(objdump -T "$so" | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)
+            echo "newest glibc symbol: $glibc"
+            if [ "$(printf '%s\n' "$glibc" GLIBC_2.35 | sort -V | tail -1)" != GLIBC_2.35 ]; then
+              echo "::error::$so needs $glibc, past the 2.35 baseline"
+              exit 1
+            fi
+            if readelf -S "$so" | grep -q '\.debug_info'; then
+              echo "::error::$so still carries its debug info"
+              exit 1
+            fi
+          done
+
       - name: Upload the KSP package
         uses: actions/upload-artifact@v7
         with:
           name: release-ksp-linux-x64
-          path: build/mono-llvm-jit-ksp-linux.zip
+          path: |
+            build/mono-llvm-jit-ksp-linux.zip
+            build/mono-llvm-jit-ksp-linux-debug.zip
           compression-level: 0
           if-no-files-found: error
 
