@@ -20,7 +20,9 @@
 #include <llvm/Support/Error.h>
 #include <llvm/Support/raw_ostream.h>
 
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include "version.h"
 
@@ -72,28 +74,46 @@ finish (llvm::Expected<void *> code, MonoError *error)
 	return NULL;
 }
 
+/// Logs at CRITICAL rather than ERROR, because eglib aborts on ERROR.
+void
+log_start_failure (llvm::Error err)
+{
+	g_log (G_LOG_DOMAIN, G_LOG_LEVEL_CRITICAL, "mono: could not start the LLVM backend: %s",
+	       llvm::toString (std::move (err)).c_str ());
+}
+
 } // namespace
 
 void
 mono_llvm_jit_init (void)
 {
-	// Unity sets its embedding host name before initializing the JIT.
+	// Without a usable stderr, as in a GUI player, every write to errs () fails,
+	// and the stream's destructor then exits the process with status 1. That
+	// destructor runs when a host unloads this library. A handler registered
+	// after errs () is constructed runs before it.
+	static std::once_flag clear_errs_at_exit;
+	std::call_once (clear_errs_at_exit, [] {
+		llvm::errs ();
+		std::atexit ([] { llvm::errs ().clear_error (); });
+	});
+
+	// Unity sets its embedding host name before initializing the JIT, and
+	// receives this through the log handler it installs.
 	if (mono_unity_is_embedded ())
-		llvm::errs () << "Mono LLVM JIT -- Phantomical/mono#" << build_shorthash () << "\n";
+		g_log (G_LOG_DOMAIN, G_LOG_LEVEL_INFO, "Mono LLVM JIT -- KSP1Retooled/mono#%s",
+		       build_shorthash ());
 
 	// mini_init () reads mono_llvm_jit_tier0_enabled () right after this
 	// call, before any method has asked to compile - before MonoJit::create ()
 	// would otherwise have settled these options.
 	if (llvm::Error err = mono::apply_options ())
-		llvm::logAllUnhandledErrors (std::move (err), llvm::errs (),
-		                             "mono: could not start the LLVM backend: ");
+		log_start_failure (std::move (err));
 
 	llvm::Expected<mono::MonoBackend *> backend = mono::MonoBackend::get ();
 
 	/* The first compile asks again and reports this through its MonoError. */
 	if (!backend)
-		llvm::logAllUnhandledErrors (backend.takeError (), llvm::errs (),
-		                             "mono: could not start the LLVM backend: ");
+		log_start_failure (backend.takeError ());
 }
 
 void *
