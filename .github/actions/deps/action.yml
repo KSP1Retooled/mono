@@ -11,21 +11,30 @@ description: >-
 runs:
   using: composite
   steps:
-    # Noble's own archive stops at llvm-20 and the backend is written against
-    # 23 APIs, so LLVM comes from apt.llvm.org rather than from the distro.
+    # The distro archives stop short of llvm-23, and the backend is written
+    # against 23 APIs, so LLVM comes from apt.llvm.org rather than from the
+    # distro.
     #
     # clang-18 by an exact name rather than the `clang` metapackage, whose
-    # version the llvm-23 list below would otherwise decide.
+    # version the llvm-23 list below would otherwise decide. Noble's own
+    # archive carries clang-18 and lld-18; jammy's does not, so the release
+    # build, which runs on jammy for its older glibc, takes them from
+    # apt.llvm.org too.
     - shell: bash
       run: |
+        codename=$(lsb_release -cs)
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends wget gnupg ca-certificates
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+          | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+        echo "deb http://apt.llvm.org/$codename/ llvm-toolchain-$codename-23 main" \
+          | sudo tee /etc/apt/sources.list.d/llvm-23.list
+        if [ "$codename" != noble ]; then
+          echo "deb http://apt.llvm.org/$codename/ llvm-toolchain-$codename-18 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-18.list
+        fi
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
           build-essential clang-18 cmake ninja-build python3 zlib1g-dev \
-          libgtest-dev ccache mono-devel zstd wget gnupg ca-certificates patchelf
-        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-          | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
-        echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" \
-          | sudo tee /etc/apt/sources.list.d/llvm-23.list
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends llvm-23-dev
+          libgtest-dev ccache mono-devel zstd patchelf llvm-23-dev
         echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
